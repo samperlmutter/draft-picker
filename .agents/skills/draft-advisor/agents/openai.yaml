@@ -1,0 +1,7 @@
+interface:
+  display_name: "Draft Advisor"
+  short_description: "Prepare picks and evaluate draft trades"
+  default_prompt: "Use $draft-advisor to get ready for my draft turn."
+
+policy:
+  allow_implicit_invocation: true

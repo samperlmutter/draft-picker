@@ -14,6 +14,7 @@ python3 -m draft_advisor prepare
 python3 -m draft_advisor recommend
 python3 -m draft_advisor recommend --json
 python3 -m draft_advisor refresh
+python3 -m draft_advisor trade --offer-file confirmed-trade.json --json
 python3 -m draft_advisor status
 python3 -m draft_advisor status --json
 python3 -m draft_advisor monitor stop
@@ -32,3 +33,8 @@ value reads, and leaves a calculated pick plus four backups in the warm cache.
 FantasyCalc redraft values are the primary quality signal; Fantasy Football
 Calculator ADP is used only to estimate the cost of waiting. Complete external
 snapshots and recommendations are atomically activated in the runtime directory.
+
+The repository skill at `.agents/skills/draft-advisor/SKILL.md` provides the thin
+Codex adapter for natural preparation, recommendation, and confirmed-trade
+requests. Trade JSON contains `confirmed`, `give`, and `receive`; each asset is a
+current-draft `player` with `player_id` or a remaining `pick` with `pick_no`.

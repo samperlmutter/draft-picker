@@ -10,6 +10,7 @@ from .config import load_config
 from .monitor import monitor_pid, refresh, run, start, stop
 from .service import ensure_values, read_recommendation, recalculate
 from .storage import Storage
+from .trade import evaluate
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,6 +23,9 @@ def _parser() -> argparse.ArgumentParser:
     for name, help_text in (("prepare", "prepare and warm a current recommendation"), ("recommend", "show the warm recommendation"), ("refresh", "refresh external player values")):
         command = sub.add_parser(name, help=help_text)
         command.add_argument("--json", action="store_true", dest="json_output")
+    trade = sub.add_parser("trade", help="evaluate a structured, confirmed Trade Offer")
+    trade.add_argument("--offer-file", required=True, help="confirmed JSON offer path, or - for stdin")
+    trade.add_argument("--json", action="store_true", dest="json_output")
     monitor = sub.add_parser("monitor", help="manage the local monitor")
     monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
     for name in ("start", "stop", "run"):
@@ -69,6 +73,13 @@ def _recommendation_text(recommendation: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _trade_text(result: dict[str, Any]) -> str:
+    lines = [f"Trade: {result['decision'].upper()} — {result['reason']}"]
+    if result.get("counteroffer"):
+        lines.append("Counteroffer: " + json.dumps(result["counteroffer"], sort_keys=True, separators=(",", ":")))
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -100,6 +111,14 @@ def main(argv: list[str] | None = None) -> int:
                 next_turn = result["next_turn"]
                 turn_text = f"pick #{next_turn['pick_no']}" if next_turn else "unset"
                 print(f"Ready: roster {state['participant']['roster_id']}; next turn {turn_text}; monitor {'started' if created else 'already running'}.\n{_recommendation_text(recommendation)}")
+        elif args.command == "trade":
+            if args.offer_file == "-":
+                offer = json.load(sys.stdin)
+            else:
+                with open(args.offer_file) as handle:
+                    offer = json.load(handle)
+            result = evaluate(offer, storage.read_state(), ensure_values(config, storage)[0])
+            print(json.dumps(result, sort_keys=True) if args.json_output else _trade_text(result))
         elif args.monitor_command == "start":
             pid, created = start(args.config, storage, config)
             print(f"Monitor {'started' if created else 'already running'} (pid {pid}).")
