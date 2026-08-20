@@ -27,6 +27,9 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(result["participant"]["roster_id"], 8)
         self.assertIsNotNone(result["next_turn"])
         self.assertEqual(len(result["recommendation"]["backup_picks"]), 4)
+        # Cross several controlled monitor polls; unchanged source content must
+        # not republish the value snapshot or warm Recommendation.
+        time.sleep(0.35)
         started = time.perf_counter()
         warm = cli(env, "recommend", "--json")
         elapsed = time.perf_counter() - started

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,8 @@ class Storage:
         self.pid_path = root / "monitor.pid"
         self.values_path = root / "player-values.json"
         self.recommendation_path = root / "recommendation.json"
+        self.monitor_ready_path = root / "monitor.ready"
+        self.lock_path = root / "publication.lock"
 
     @classmethod
     def from_environment(cls) -> "Storage":
@@ -55,6 +59,17 @@ class Storage:
             raise ValueError(missing_message) from exc
         except json.JSONDecodeError as exc:
             raise ValueError(f"stored {path.stem} is invalid") from exc
+
+    @contextmanager
+    def publication_lock(self):
+        """Serialize complete state/value/recommendation publications."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def append_events(self, events: list[dict[str, Any]]) -> None:
         if not events:

@@ -114,15 +114,21 @@ def main(argv: list[str] | None = None) -> int:
             recommendation = read_recommendation(storage)
             print(json.dumps(recommendation, sort_keys=True) if args.json_output else _recommendation_text(recommendation))
         elif args.command == "refresh":
-            snapshot, _ = ensure_values(config, storage, force=True)
-            recommendation = recalculate(storage, snapshot=snapshot)
+            with storage.publication_lock():
+                snapshot, _ = ensure_values(config, storage, force=True)
+                recommendation = recalculate(storage, snapshot=snapshot)
             result = {"refreshed": True, "player_count": len(snapshot["players"]), "omitted": snapshot.get("omitted") or [], "recommendation": recommendation}
             print(json.dumps(result, sort_keys=True) if args.json_output else f"External values refreshed for {result['player_count']} players.\n{_recommendation_text(recommendation)}")
         elif args.command == "prepare":
             pid, created = start(args.config, storage, config)
             state = refresh(config, storage)
-            snapshot, _ = ensure_values(config, storage, force=True)
-            recommendation = recalculate(storage, state, snapshot)
+            with storage.publication_lock():
+                snapshot, _ = ensure_values(config, storage, force=True)
+                # A monitor poll may have accepted a pick after the forced board
+                # fetch and before this publication lock. Always bind the warm
+                # Recommendation and readiness result to the newest state.
+                state = storage.read_state()
+                recommendation = recalculate(storage, state, snapshot)
             result = {"ready": True, "monitor_started": created, "monitor_pid": pid, "participant": state["participant"], "next_turn": state.get("participant_next_turn"), "recommendation": recommendation}
             if args.json_output:
                 print(json.dumps(result, sort_keys=True))
@@ -136,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 with open(args.offer_file) as handle:
                     offer = json.load(handle)
-            result = evaluate(offer, storage.read_state(), ensure_values(config, storage)[0])
+            with storage.publication_lock():
+                result = evaluate(offer, storage.read_state(), ensure_values(config, storage)[0])
             print(json.dumps(result, sort_keys=True) if args.json_output else _trade_text(result))
         elif args.monitor_command == "start":
             pid, created = start(args.config, storage, config)

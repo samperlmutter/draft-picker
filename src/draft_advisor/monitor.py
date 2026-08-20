@@ -35,24 +35,32 @@ def monitor_pid(storage: Storage) -> int | None:
 
 
 def refresh(config: Config, storage: Storage, client: SleeperClient | None = None) -> dict:
-    previous = None
-    try:
-        previous = storage.read_state()
-    except ValueError:
-        pass
-    state, events = fetch_state(config, client or SleeperClient(), previous)
-    storage.append_events(events)
-    storage.write_state(state)
-    snapshot, _ = ensure_values(config, storage, client)
-    if state["draft"]["status"] != "complete":
+    with storage.publication_lock():
+        previous = None
         try:
-            recalculate(storage, state, snapshot)
-        except InsufficientCandidates:
-            # A depleted synthetic or end-stage board may not have the five
-            # candidates required by the public recommendation contract. Keep
-            # the last complete warm result while monitoring can still finish.
+            previous = storage.read_state()
+        except ValueError:
             pass
-    return state
+        state, events = fetch_state(config, client or SleeperClient(), previous)
+        storage.append_events(events)
+        storage.write_state(state)
+        snapshot, values_refreshed = ensure_values(config, storage, client)
+        state_changed = previous is None or _material_state(previous) != _material_state(state)
+        recommendation_missing = not storage.recommendation_path.exists()
+        if state["draft"]["status"] != "complete" and (state_changed or values_refreshed or recommendation_missing):
+            try:
+                recalculate(storage, state, snapshot)
+            except InsufficientCandidates:
+                # A depleted synthetic or end-stage board may not have the five
+                # candidates required by the public recommendation contract. Keep
+                # the last complete warm result while monitoring can still finish.
+                pass
+        return state
+
+
+def _material_state(state: dict) -> dict:
+    """Ignore fetch time; recommendations change only with draft inputs."""
+    return {key: value for key, value in state.items() if key != "updated_at"}
 
 
 def start(config_path: str | None, storage: Storage, config: Config) -> tuple[int, bool]:
@@ -67,17 +75,17 @@ def start(config_path: str | None, storage: Storage, config: Config) -> tuple[in
     source_root = str(Path(__file__).resolve().parents[1])
     env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     try:
-        previous_state_mtime = storage.state_path.stat().st_mtime_ns
+        previous_ready_token = storage.monitor_ready_path.read_text()
     except FileNotFoundError:
-        previous_state_mtime = -1
+        previous_ready_token = None
     process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         try:
-            refreshed = storage.state_path.stat().st_mtime_ns > previous_state_mtime
+            cycle_complete = storage.monitor_ready_path.read_text() != previous_ready_token
         except FileNotFoundError:
-            refreshed = False
-        if refreshed and monitor_pid(storage) == process.pid:
+            cycle_complete = False
+        if cycle_complete and monitor_pid(storage) == process.pid:
             return process.pid, True
         if process.poll() is not None:
             raise ValueError("monitor failed to start; run `monitor run` to inspect the error")
@@ -116,6 +124,7 @@ def run(config: Config, storage: Storage) -> None:
     try:
         while not stopping:
             state = refresh(config, storage)
+            storage.monitor_ready_path.write_text(f"{time.time_ns()}\n")
             polls += 1
             if state["draft"]["status"] == "complete" or (max_polls and polls >= max_polls):
                 break
