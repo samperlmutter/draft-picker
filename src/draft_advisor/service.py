@@ -7,7 +7,7 @@ from .config import Config
 from .recommend import calculate
 from .sleeper import SleeperClient
 from .storage import Storage
-from .values import build_value_snapshot
+from .values import build_value_snapshot, validate_value_snapshot
 
 
 def read_values(storage: Storage) -> dict[str, Any]:
@@ -16,7 +16,7 @@ def read_values(storage: Storage) -> dict[str, Any]:
 
 def refresh_values(storage: Storage, client: SleeperClient | None = None) -> dict[str, Any]:
     # Build and validate in memory; only a complete matched snapshot reaches disk.
-    snapshot = build_value_snapshot(client)
+    snapshot = validate_value_snapshot(build_value_snapshot(client))
     storage.write_json(storage.values_path, snapshot)
     return snapshot
 

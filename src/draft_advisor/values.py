@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -129,3 +130,20 @@ def build_value_snapshot(client: SleeperClient | None = None, clock: Callable[[]
     if len(values) < 5:
         raise ValueError("external snapshot is incomplete after player matching")
     return {"schema_version": 1, "updated_at": clock(), "format": "12-team one-QB full-PPR", "players": values, "omitted": omitted}
+
+
+def validate_value_snapshot(snapshot: Any) -> dict[str, Any]:
+    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 1:
+        raise ValueError("value snapshot must be a schema-version 1 object")
+    players = snapshot.get("players")
+    if not isinstance(players, dict) or len(players) < 5:
+        raise ValueError("value snapshot must contain at least five matched players")
+    for player_id, player in players.items():
+        if not isinstance(player, dict) or player.get("value") is None or not player.get("position"):
+            raise ValueError(f"value snapshot player {player_id} is incomplete")
+        value = float(player["value"])
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"value snapshot player {player_id} has an invalid value")
+    if not isinstance(snapshot.get("omitted", []), list):
+        raise ValueError("value snapshot omissions must be an array")
+    return snapshot

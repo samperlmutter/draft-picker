@@ -11,6 +11,7 @@ from .monitor import monitor_pid, refresh, run, start, stop
 from .service import ensure_values, read_recommendation, recalculate
 from .storage import Storage
 from .trade import evaluate
+from .replay import replay
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -26,6 +27,9 @@ def _parser() -> argparse.ArgumentParser:
     trade = sub.add_parser("trade", help="evaluate a structured, confirmed Trade Offer")
     trade.add_argument("--offer-file", required=True, help="confirmed JSON offer path, or - for stdin")
     trade.add_argument("--json", action="store_true", dest="json_output")
+    replay_command = sub.add_parser("replay", help="replay and verify a complete recorded draft")
+    replay_command.add_argument("--input", required=True, help="self-contained replay JSON file")
+    replay_command.add_argument("--json", action="store_true", dest="json_output")
     monitor = sub.add_parser("monitor", help="manage the local monitor")
     monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
     for name in ("start", "stop", "run"):
@@ -80,9 +84,24 @@ def _trade_text(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _replay_text(result: dict[str, Any]) -> str:
+    if not result["passed"]:
+        failure = result["first_failure"]
+        context = {key: value for key, value in failure.items() if key not in {"stage", "message"}}
+        suffix = f" Context: {json.dumps(context, sort_keys=True)}" if context else ""
+        return f"Replay FAILED at {failure['stage']}: {failure['message']}.{suffix}"
+    summary = result["summary"]
+    return f"Replay PASSED: {summary['picks_processed']} picks, {summary['participant_turns']} Participant turns, {summary['trade_evaluations']} trade checks; final roster {json.dumps(summary['final_roster'], sort_keys=True)}."
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "replay":
+            with open(args.input) as handle:
+                result = replay(json.load(handle))
+            print(json.dumps(result, sort_keys=True) if args.json_output else _replay_text(result))
+            return 0 if result["passed"] else 1
         config = load_config(args.config)
         storage = Storage.from_environment()
         if args.command == "status":

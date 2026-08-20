@@ -88,6 +88,8 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
         for position in ("QB", "RB", "WR", "TE"):
             if positions[position] < requirements[position]:
                 opponent_needs[position] += 1
+    recent_positions = [str((pick.get("metadata") or {}).get("position") or "").upper() for pick in (state.get("picks") or [])[-3:]]
+    recent_run_position = recent_positions[0] if len(recent_positions) == 3 and len(set(recent_positions)) == 1 else None
 
     candidates = []
     for player_id, player in available.items():
@@ -111,8 +113,9 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
             expected_survival = 1 / (1 + math.exp(-margin / 4))
             wait_cost = min(7.0, max(0.0, (next_pick_no - float(adp)) / 3))
         need_count = opponent_needs[position]
-        demand = min(5.0, need_count * 1.5)
-        expected_survival = max(0.02, expected_survival - min(0.35, need_count * 0.1))
+        run_pressure = 0.2 if position == recent_run_position else 0.0
+        demand = min(5.0, need_count * 1.5 + run_pressure * 5)
+        expected_survival = max(0.02, expected_survival - min(0.35, need_count * 0.1) - run_pressure)
         stage = min(1.0, max(0.0, (current_round - 1) / max(1, total_rounds - 1)))
         stability = float(player.get("stability", 0.5))
         upside = float(player.get("upside", 0.5))
@@ -136,6 +139,7 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
             "injury_warning": f"{injury} designation materially reduces this score" if injury in {"OUT", "IR", "PUP"} else None,
             "scarcity": round(scarcity, 3), "expected_survival_to_next_turn": round(expected_survival, 3),
             "relevant_opponent_needs": {position: need_count} if need_count else {},
+            "position_run_survival_penalty": run_pressure,
             "adp": adp,
         })
     candidates.sort(key=lambda item: (-item["draft_score"], -float(available[item["player_id"]]["value"]), item["name"] or "", item["player_id"]))
