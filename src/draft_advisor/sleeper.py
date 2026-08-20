@@ -66,3 +66,9 @@ class SleeperClient:
 
     def traded_picks(self, draft_id: str) -> list[dict[str, Any]]:
         return self.get(f"draft/{draft_id}/traded_picks")
+
+    def players(self) -> dict[str, dict[str, Any]]:
+        value = self.get("players/nfl")
+        if not isinstance(value, dict):
+            raise ValueError("Sleeper players response must be an object")
+        return value

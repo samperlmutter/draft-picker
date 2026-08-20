@@ -9,6 +9,8 @@ from pathlib import Path
 
 from .config import Config
 from .sleeper import SleeperClient
+from .service import ensure_values, recalculate
+from .recommend import InsufficientCandidates
 from .state import fetch_state
 from .storage import Storage
 
@@ -41,6 +43,15 @@ def refresh(config: Config, storage: Storage, client: SleeperClient | None = Non
     state, events = fetch_state(config, client or SleeperClient(), previous)
     storage.append_events(events)
     storage.write_state(state)
+    snapshot, _ = ensure_values(config, storage, client)
+    if state["draft"]["status"] != "complete":
+        try:
+            recalculate(storage, state, snapshot)
+        except InsufficientCandidates:
+            # A depleted synthetic or end-stage board may not have the five
+            # candidates required by the public recommendation contract. Keep
+            # the last complete warm result while monitoring can still finish.
+            pass
     return state
 
 

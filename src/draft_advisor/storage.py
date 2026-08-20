@@ -13,6 +13,8 @@ class Storage:
         self.state_path = root / "draft-state.json"
         self.events_path = root / "pick-events.jsonl"
         self.pid_path = root / "monitor.pid"
+        self.values_path = root / "player-values.json"
+        self.recommendation_path = root / "recommendation.json"
 
     @classmethod
     def from_environment(cls) -> "Storage":
@@ -30,18 +32,29 @@ class Storage:
             raise ValueError("stored Draft State is invalid") from exc
 
     def write_state(self, state: dict[str, Any]) -> None:
+        self.write_json(self.state_path, state)
+
+    def write_json(self, destination: Path, value: dict[str, Any]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        fd, raw_path = tempfile.mkstemp(prefix=".draft-state-", suffix=".json", dir=self.root)
+        fd, raw_path = tempfile.mkstemp(prefix=f".{destination.stem}-", suffix=".json", dir=self.root)
         path = Path(raw_path)
         try:
             with os.fdopen(fd, "w") as handle:
-                json.dump(state, handle, sort_keys=True, separators=(",", ":"))
+                json.dump(value, handle, sort_keys=True, separators=(",", ":"))
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(path, self.state_path)
+            os.replace(path, destination)
         finally:
             path.unlink(missing_ok=True)
+
+    def read_json(self, path: Path, missing_message: str) -> dict[str, Any]:
+        try:
+            return json.loads(path.read_text())
+        except FileNotFoundError as exc:
+            raise ValueError(missing_message) from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"stored {path.stem} is invalid") from exc
 
     def append_events(self, events: list[dict[str, Any]]) -> None:
         if not events:

@@ -35,6 +35,19 @@ def setup_fixture(tmp_path: Path, *, live: bool = False) -> tuple[dict[str, str]
     picks = [{"pick_no": 1, "round": 1, "draft_slot": 1, "roster_id": 8, "player_id": "p1", "picked_by": "u8", "metadata": {"first_name": "Ada", "last_name": "Runner"}}] if live else []
     write_json(fixtures / "draft__draft-1__picks.json", picks)
     write_json(fixtures / "draft__draft-1__traded_picks.json", [{"round": 2, "draft_slot": 2, "owner_id": 8, "roster_id": 9, "previous_owner_id": 9}] if live else [])
+    players = {
+        "p1": {"full_name": "Ada Runner", "team": "AAA", "position": "RB", "status": "Active"},
+        "p2": {"full_name": "Bea Catcher", "team": "BBB", "position": "WR", "status": "Active"},
+        "p3": {"full_name": "Cal Thrower", "team": "CCC", "position": "QB", "status": "Active"},
+        "p4": {"full_name": "Dee Blocker", "team": "DDD", "position": "TE", "status": "Active"},
+        "p5": {"full_name": "Eli Runner", "team": "EEE", "position": "RB", "status": "Active"},
+        "p6": {"full_name": "Fox Catcher", "team": "FFF", "position": "WR", "status": "Active"},
+        "p7": {"full_name": "Gia Runner", "team": "GGG", "position": "RB", "status": "Active"},
+        "p8": {"full_name": "Hal Catcher", "team": "HHH", "position": "WR", "status": "Active"},
+    }
+    write_json(fixtures / "players__nfl.json", players)
+    write_json(fixtures / "fantasycalc.json", [{"player": {"sleeperId": player_id, "name": player["full_name"], "maybeTeam": player["team"], "position": player["position"]}, "value": 100 - index * 5, "stability": 0.8, "upside": 0.6} for index, (player_id, player) in enumerate(players.items())])
+    write_json(fixtures / "ffc-adp.json", {"players": [{"name": player["full_name"], "team": player["team"], "position": player["position"], "adp": index + 1} for index, player in enumerate(players.values())]})
     env = os.environ.copy()
     env.update({"PYTHONPATH": str(ROOT / "src"), "DRAFT_ADVISOR_CONFIG": str(config), "DRAFT_ADVISOR_FIXTURES": str(fixtures), "DRAFT_ADVISOR_RUNTIME_DIR": str(runtime)})
     return env, fixtures
@@ -113,13 +126,21 @@ class CliTests(unittest.TestCase):
         while time.monotonic() < deadline and len(json.loads((runtime / "draft-state.json").read_text())["picks"]) != 2:
             time.sleep(0.02)
         self.assertEqual(len(json.loads((runtime / "draft-state.json").read_text())["picks"]), 2)
+        deadline = time.monotonic() + 3
+        while True:
+            recommendation = json.loads((runtime / "recommendation.json").read_text())
+            candidate_ids = {recommendation["calculated_pick"]["player_id"], *(pick["player_id"] for pick in recommendation["backup_picks"])}
+            if "p2" not in candidate_ids or time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        self.assertNotIn("p2", candidate_ids)
         detail_path = fixtures / "draft__draft-1.json"
         detail = json.loads(detail_path.read_text())
         detail["status"] = "complete"
         write_json(detail_path, detail)
         process.wait(timeout=3)
-        process.communicate()
-        self.assertEqual(process.returncode, 0)
+        _, stderr = process.communicate()
+        self.assertEqual(process.returncode, 0, stderr)
         self.assertFalse((runtime / "monitor.pid").exists())
 
     def test_clear_failure_is_nonzero(self) -> None:
