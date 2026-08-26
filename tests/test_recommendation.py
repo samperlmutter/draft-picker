@@ -4,8 +4,10 @@ import json
 import tempfile
 import time
 import unittest
+from collections import Counter
 from pathlib import Path
 
+from src.draft_advisor.recommend import _bye_week_penalty
 from tests.test_cli import cli, setup_fixture, write_json
 
 
@@ -16,6 +18,15 @@ class RecommendationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_bye_week_penalty_builds_only_after_concentration(self) -> None:
+        positions = Counter({("WR", "8"): 3, ("QB", "8"): 1})
+        self.assertEqual(_bye_week_penalty("8", "WR", 3, Counter({"8": 2}), Counter({"8": 1}), positions), 0)
+        self.assertEqual(_bye_week_penalty("8", "WR", 3, Counter({"8": 3}), Counter({"8": 1}), positions), -1)
+        self.assertEqual(_bye_week_penalty("8", "WR", 12, Counter({"8": 3}), Counter({"8": 2}), positions), -3)
+        self.assertEqual(_bye_week_penalty("8", "WR", 12, Counter({"8": 4}), Counter({"8": 3}), positions), -9)
+        self.assertEqual(_bye_week_penalty("8", "QB", -10, Counter({"8": 1}), Counter({"8": 1}), positions), -4)
+        self.assertEqual(_bye_week_penalty("", "QB", -10, Counter({"": 9}), Counter({"": 9}), positions), 0)
 
     def test_prepare_and_warm_recommendation_text_json_and_performance(self) -> None:
         env, _ = setup_fixture(self.tmp_path, live=True)

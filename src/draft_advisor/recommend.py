@@ -53,6 +53,45 @@ def _fit(position: str, requirements: Counter[str], roster: Counter[str]) -> tup
     return 3.0, "adds RB/WR bench depth" if position in {"RB", "WR"} else "bench depth"
 
 
+def _projected_starter_ids(
+    player_ids: list[Any], players: dict[str, Any], requirements: Counter[str]
+) -> set[str]:
+    """Fill direct slots, then FLEX slots, in roster order."""
+    starters: set[str] = set()
+    remaining = requirements.copy()
+    flex_candidates: list[str] = []
+    for raw_player_id in player_ids:
+        player_id = str(raw_player_id)
+        position = str(players.get(player_id, {}).get("position") or "").upper()
+        if remaining[position] > 0:
+            starters.add(player_id)
+            remaining[position] -= 1
+        elif position in FLEX_POSITIONS:
+            flex_candidates.append(player_id)
+    for player_id in flex_candidates[:remaining["FLEX"]]:
+        starters.add(player_id)
+    return starters
+
+
+def _bye_week_penalty(
+    bye_week: str, position: str, fit: float, roster_byes: Counter[str],
+    starter_byes: Counter[str], roster_positions_by_bye: Counter[tuple[str, str]],
+) -> float:
+    if not bye_week:
+        return 0.0
+    # The fourth player sharing a bye starts to matter; each additional player
+    # is progressively more costly. Three projected starters sharing a bye is
+    # independently discouraged.
+    total_excess = max(0, roster_byes[bye_week] + 1 - 3)
+    starter_excess = max(0, starter_byes[bye_week] + (1 if fit > 3 else 0) - 2)
+    penalty = -(total_excess * (total_excess + 1) / 2)
+    penalty -= starter_excess * (starter_excess + 1)
+    # A same-bye backup cannot cover the starter at a scarce position.
+    if position in {"QB", "TE"} and fit < 0 and roster_positions_by_bye[(position, bye_week)]:
+        penalty -= 4.0
+    return penalty
+
+
 def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[], float] = time.time) -> dict[str, Any]:
     available = {
         player_id: player for player_id, player in snapshot["players"].items()
@@ -63,10 +102,18 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
         raise InsufficientCandidates("fewer than five eligible players remain")
     participant_id = int(state["participant"]["roster_id"])
     roster = _roster_positions(state, snapshot["players"], participant_id)
-    roster_player_ids = (state.get("rosters", {}).get(str(participant_id), {}).get("player_ids") or [])
+    participant_roster = state.get("rosters", {}).get(str(participant_id), {})
+    roster_player_ids = participant_roster.get("player_ids") or participant_roster.get("drafted_player_ids") or []
     roster_teams = Counter(str(snapshot["players"].get(str(player_id), {}).get("team") or "") for player_id in roster_player_ids)
     roster_byes = Counter(str(snapshot["players"].get(str(player_id), {}).get("bye_week") or "") for player_id in roster_player_ids)
     requirements = _position_requirements(state)
+    starter_ids = _projected_starter_ids(roster_player_ids, snapshot["players"], requirements)
+    starter_byes = Counter(str(snapshot["players"].get(player_id, {}).get("bye_week") or "") for player_id in starter_ids)
+    roster_positions_by_bye = Counter(
+        (str(snapshot["players"].get(str(player_id), {}).get("position") or "").upper(),
+         str(snapshot["players"].get(str(player_id), {}).get("bye_week") or ""))
+        for player_id in roster_player_ids
+    )
     total_rounds = int(state["league_rules"].get("rounds") or 15)
     current_turn = state.get("current_turn") or {}
     current_round = int(current_turn.get("round") or 1)
@@ -122,14 +169,20 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
         round_strategy = 4.0 * ((1 - stage) * stability + stage * upside)
         injury = str(player.get("injury_status") or "").upper()
         injury_penalty = -28.0 if injury in {"OUT", "IR", "PUP"} else 0.0
-        # Team and bye diversity deliberately remain sub-point tie-breakers.
-        diversity_tiebreaker = -0.01 * roster_teams[str(player.get("team") or "")] - 0.005 * roster_byes[str(player.get("bye_week") or "")]
+        team = str(player.get("team") or "")
+        bye_week = str(player.get("bye_week") or "")
+        team_tiebreaker = -0.01 * roster_teams[team] if team else 0.0
+        bye_week_penalty = _bye_week_penalty(
+            bye_week, position, fit, roster_byes, starter_byes, roster_positions_by_bye
+        )
+        diversity_tiebreaker = team_tiebreaker + bye_week_penalty
         score = quality + fit + scarcity + wait_cost + demand + round_strategy + injury_penalty + diversity_tiebreaker
         components = {
             "primary_value": round(quality, 3), "roster_fit": round(fit, 3),
             "positional_scarcity": round(scarcity, 3), "wait_cost": round(wait_cost, 3),
             "opponent_demand": round(demand, 3), "round_strategy": round(round_strategy, 3),
             "injury_penalty": injury_penalty,
+            "bye_week_penalty": round(bye_week_penalty, 3),
             "diversity_tiebreaker": round(diversity_tiebreaker, 3),
         }
         candidates.append({
