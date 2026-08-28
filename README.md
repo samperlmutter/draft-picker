@@ -35,6 +35,18 @@ FantasyCalc redraft values are the primary quality signal; Fantasy Football
 Calculator ADP is used only to estimate the cost of waiting. Complete external
 snapshots and recommendations are atomically activated in the runtime directory.
 
+Schedule preparation is an independent optional cache. A schedule provider can
+be supplied through a client `schedule(season)` method, recorded fixtures can
+use `schedule__<season>.json` (or `schedule.json`) under
+`DRAFT_ADVISOR_FIXTURES`, and a configured JSON URL can use
+`schedule_source_url` in the config (with `{season}` as an optional placeholder).
+The provider payload supplies games and position-specific opponent matchup
+ratings; the application does not assume Sleeper exposes either one. Prepared
+data is stored as `schedule-snapshot.json` and is reused until its freshness
+window, League Rules identity, or relevant player team/position inputs change.
+Incomplete or failed refreshes leave the previous valid snapshot intact and
+fall back to neutral schedule evidence when no valid snapshot is available.
+
 The repository skill at `.agents/skills/draft-advisor/SKILL.md` provides the thin
 Codex adapter for natural preparation, recommendation, and confirmed-trade
 requests. Trade JSON contains `confirmed`, `give`, and `receive`; each asset is a
@@ -42,5 +54,9 @@ current-draft `player` with `player_id` or a remaining `pick` with `pick_no`.
 
 `replay` accepts a self-contained initial Draft State, the same ordered pick-event
 objects written by the monitor, complete player-value snapshots, refresh points,
-and confirmed trade checks. It performs no source requests and returns a concise
-readiness summary or the first failing pick/evaluation with diagnostic context.
+an optional prepared `schedule_snapshot`, and confirmed trade checks. It validates
+the schedule cache identity against the initial League Rules, performs no source
+requests, and returns a concise readiness summary or the first failing
+pick/evaluation with diagnostic context. Text Recommendations include compact
+regular-season, playoff, and roster-collision evidence; JSON retains the detailed
+weekly evidence.

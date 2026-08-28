@@ -16,6 +16,7 @@ class Storage:
         self.events_path = root / "pick-events.jsonl"
         self.pid_path = root / "monitor.pid"
         self.values_path = root / "player-values.json"
+        self.schedule_path = root / "schedule-snapshot.json"
         self.recommendation_path = root / "recommendation.json"
         self.monitor_ready_path = root / "monitor.ready"
         self.lock_path = root / "publication.lock"
