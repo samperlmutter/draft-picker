@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
 
-from src.draft_advisor.recommend import _bye_week_penalty
+from src.draft_advisor.recommend import _bye_week_penalty, _projected_starter_ids
 from src.draft_advisor.recommend import calculate
 from src.draft_advisor.schedule import build_schedule_snapshot
 from src.draft_advisor.service import recalculate
@@ -220,6 +220,38 @@ class RecommendationTests(unittest.TestCase):
         self.assertLess(elapsed, 0.5)
         candidates = [first["calculated_pick"], *first["backup_picks"]]
         self.assertTrue(all(candidate["schedule_data_quality"] == "complete" for candidate in candidates))
+
+    def test_recalculate_ignores_schedule_for_changed_player_inputs(self) -> None:
+        players = recommendation_players()
+        state = recommendation_state()
+        snapshot = {"updated_at": 1.0, "players": players}
+        schedule = prepared_recommendation_schedule()
+        storage = Storage(self.tmp_path / "runtime")
+        storage.write_state(state)
+        storage.write_json(storage.values_path, snapshot)
+        storage.write_json(storage.schedule_path, schedule)
+
+        changed = {"updated_at": 2.0, "players": {player_id: dict(player) for player_id, player in players.items()}}
+        changed["players"]["fav"]["team"] = "BBB"
+        changed["players"]["fav"]["position"] = "WR"
+        recommendation = recalculate(storage, state=state, snapshot=changed)
+
+        candidates = [recommendation["calculated_pick"], *recommendation["backup_picks"]]
+        self.assertTrue(all(candidate["schedule_data_quality"] == "unavailable" for candidate in candidates))
+        self.assertTrue(all(candidate["components"]["schedule_adjustment"] == 0.0 for candidate in candidates))
+
+    def test_projected_starters_choose_value_over_roster_order(self) -> None:
+        players = {
+            "low-rb": {"position": "RB", "value": 80, "name": "Low"},
+            "high-rb": {"position": "RB", "value": 100, "name": "High"},
+            "flex-wr": {"position": "WR", "value": 90, "name": "Flex"},
+        }
+        requirements = Counter({"RB": 1, "FLEX": 1})
+
+        self.assertEqual(
+            _projected_starter_ids(["low-rb", "high-rb", "flex-wr"], players, requirements),
+            {"high-rb", "flex-wr"},
+        )
 
     def test_deterministic_evidence_model_eligibility_and_primary_value(self) -> None:
         env, _ = setup_fixture(self.tmp_path, live=True)
@@ -466,7 +498,7 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(candidate["components"]["roster_collision"], -1.5)
         self.assertEqual(candidate["roster_collision_adjustment"], -1.5)
 
-    def test_flex_starter_collision_is_counted_but_bench_player_is_not(self) -> None:
+    def test_flex_starter_collision_and_value_based_direct_starter_are_counted(self) -> None:
         players = collision_players()
         flex_state = collision_state(["roster-rb"])
         flex_schedule = prepared_collision_schedule(players, flex_state, [1])
@@ -496,10 +528,13 @@ class RecommendationTests(unittest.TestCase):
             if item["player_id"] == "bench-rb"
         )
         bench_collisions = bench_candidate["schedule_evidence"]["roster_collision"]
-        self.assertFalse(bench_collisions["candidate_is_projected_starter"])
-        self.assertEqual(bench_collisions["projected_starter_ids"], ["roster-flex", "roster-rb", "roster-wr"])
-        self.assertEqual(bench_collisions["collision_weeks"], [])
-        self.assertEqual(bench_candidate["components"]["roster_collision"], 0.0)
+        self.assertTrue(bench_collisions["candidate_is_projected_starter"])
+        self.assertEqual(bench_collisions["projected_starter_ids"], ["bench-rb", "roster-rb", "roster-wr"])
+        self.assertEqual(
+            bench_collisions["collision_weeks"],
+            [{"week": 1, "player_ids": ["bench-rb", "roster-rb"], "teams": ["AAA", "BBB"]}],
+        )
+        self.assertEqual(bench_candidate["components"]["roster_collision"], -0.75)
 
     def test_same_team_teammates_are_not_roster_collisions(self) -> None:
         players = collision_players()

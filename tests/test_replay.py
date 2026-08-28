@@ -95,7 +95,7 @@ def build_bundle() -> dict:
     return {"initial_state": state, "events": events, "value_snapshots": [snapshot, refreshed], "value_refreshes": [{"before_pick": 90, "snapshot_index": 1}], "trade_checks": trade_checks}
 
 
-def build_replay_schedule(bundle: dict) -> dict:
+def build_replay_schedule(bundle: dict, *, without_playoffs: bool = False) -> dict:
     """Build a complete, source-free schedule context for the replay fixture."""
     state = bundle["initial_state"]
     players = bundle["value_snapshots"][0]["players"]
@@ -107,8 +107,8 @@ def build_replay_schedule(bundle: dict) -> dict:
     payload = {
         "season": 2026,
         "source": "fixture-replay-schedule",
-        "regular_season_weeks": [1, 2],
-        "playoff_weeks": [3],
+        "regular_season_weeks": [1, 2, 3] if without_playoffs else [1, 2],
+        "playoff_weeks": [] if without_playoffs else [3],
         "games": [
             {"game_id": "fixture-1", "week": 1, "home_team": "SCHEDULE-A", "away_team": "SCHEDULE-B"},
             {"game_id": "fixture-2", "week": 2, "home_team": "SCHEDULE-A", "away_team": "SCHEDULE-B"},
@@ -203,6 +203,17 @@ class ReplayTests(unittest.TestCase):
         self.assertTrue(result["checks"]["schedule_flex_collision"])
         flex_candidates = [candidate for item in result["recommendations"] for candidate in [item["calculated_pick"], *item["backup_picks"]] if candidate["player_id"] == "p80"]
         self.assertTrue(any(candidate["candidate_is_projected_starter"] and candidate["collision_weeks"] for candidate in flex_candidates))
+
+    def test_schedule_without_playoff_weeks_replays_successfully(self) -> None:
+        bundle = build_bundle()
+        bundle["schedule_snapshot"] = build_replay_schedule(bundle, without_playoffs=True)
+
+        result = replay(bundle)
+
+        self.assertTrue(result["passed"], result["first_failure"])
+        self.assertTrue(result["checks"]["schedule_context_replayed"])
+        self.assertTrue(result["checks"]["schedule_matchup_direction"])
+        self.assertTrue(result["checks"]["schedule_playoff_weighting"])
 
     def test_replay_rejects_incompatible_schedule_cache_with_context(self) -> None:
         bundle = build_bundle()

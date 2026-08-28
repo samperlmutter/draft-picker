@@ -66,18 +66,35 @@ def _fit(position: str, requirements: Counter[str], roster: Counter[str]) -> tup
 def _projected_starter_ids(
     player_ids: list[Any], players: dict[str, Any], requirements: Counter[str]
 ) -> set[str]:
-    """Fill direct slots, then FLEX slots, in roster order."""
+    """Fill direct slots, then FLEX slots, using value as starter evidence."""
     starters: set[str] = set()
     remaining = requirements.copy()
-    flex_candidates: list[str] = []
+    by_position: dict[str, list[str]] = {}
     for raw_player_id in player_ids:
         player_id = str(raw_player_id)
         position = _canonical_position(players.get(player_id, {}).get("position"))
-        if remaining[position] > 0:
+        if position:
+            by_position.setdefault(position, []).append(player_id)
+
+    def starter_key(player_id: str) -> tuple[float, str, str]:
+        player = players.get(player_id, {})
+        try:
+            value = float(player.get("value"))
+        except (TypeError, ValueError):
+            value = float("-inf")
+        return (-value, str(player.get("name") or ""), player_id)
+
+    for position, count in requirements.items():
+        if position == "FLEX":
+            continue
+        for player_id in sorted(by_position.get(position, []), key=starter_key)[:count]:
             starters.add(player_id)
-            remaining[position] -= 1
-        elif position in FLEX_POSITIONS:
-            flex_candidates.append(player_id)
+        remaining[position] = max(0, remaining[position] - count)
+
+    flex_candidates = sorted(
+        (player_id for position in FLEX_POSITIONS for player_id in by_position.get(position, []) if player_id not in starters),
+        key=starter_key,
+    )
     for player_id in flex_candidates[:remaining["FLEX"]]:
         starters.add(player_id)
     return starters

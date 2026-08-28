@@ -121,7 +121,9 @@ def ensure_schedule(
         return (previous if cache_matches_inputs else None), False
 
 
-def _schedule_matches_state(schedule: Any, state: dict[str, Any]) -> bool:
+def _schedule_matches_state(
+    schedule: Any, state: dict[str, Any], snapshot: dict[str, Any] | None = None
+) -> bool:
     if not isinstance(schedule, dict):
         return False
     rules = state.get("league_rules") or {}
@@ -135,6 +137,12 @@ def _schedule_matches_state(schedule: Any, state: dict[str, Any]) -> bool:
             if int(schedule.get("season")) != int(current_season):
                 return False
         except (TypeError, ValueError):
+            return False
+    if snapshot is not None:
+        players = snapshot.get("players")
+        if not isinstance(players, dict):
+            return False
+        if schedule.get("input_checksum") != player_input_checksum(players):
             return False
     return True
 
@@ -155,14 +163,14 @@ def recalculate(
             # available with neutral schedule components when it is absent or
             # malformed.
             schedule = None
-    elif not _schedule_matches_state(schedule, current_state):
+    elif not _schedule_matches_state(schedule, current_state, current_snapshot):
         schedule = None
     if schedule is not None:
         try:
             schedule = validate_schedule_snapshot(schedule)
         except ValueError:
             schedule = None
-        if schedule is not None and not _schedule_matches_state(schedule, current_state):
+        if schedule is not None and not _schedule_matches_state(schedule, current_state, current_snapshot):
             schedule = None
     recommendation = calculate(current_state, current_snapshot, schedule=schedule)
     storage.write_json(storage.recommendation_path, recommendation)

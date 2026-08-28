@@ -276,7 +276,7 @@ def replay(bundle: dict[str, Any]) -> dict[str, Any]:
                 for candidate in [item["calculated_pick"], *item["backup_picks"]]
             ),
             "schedule_matchup_direction": schedule is None or (favorable_qb_matchup_seen and unfavorable_rb_matchup_seen),
-            "schedule_playoff_weighting": schedule is None or playoff_weight_seen,
+            "schedule_playoff_weighting": schedule is None or not schedule.get("playoff_weeks") or playoff_weight_seen,
             "schedule_roster_collision": schedule is None or roster_collision_seen,
             "schedule_flex_collision": schedule is None or flex_collision_seen,
         }
