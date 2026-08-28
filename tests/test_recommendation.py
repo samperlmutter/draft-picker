@@ -6,6 +6,7 @@ import time
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 from src.draft_advisor.recommend import _bye_week_penalty
 from src.draft_advisor.recommend import calculate
@@ -195,9 +196,28 @@ class RecommendationTests(unittest.TestCase):
         text = cli(env, "recommend")
         self.assertIn("Calculated Pick:", text.stdout)
         self.assertIn("Backup Picks:", text.stdout)
+        self.assertIn("Schedule:", text.stdout)
         again = json.loads(cli(env, "prepare", "--json").stdout)
         self.assertFalse(again["monitor_started"])
         cli(env, "monitor", "stop")
+
+    def test_prepared_schedule_recommendation_does_not_refetch_or_recompute(self) -> None:
+        players = recommendation_players()
+        state = recommendation_state()
+        snapshot = {"updated_at": 1.0, "players": players}
+        schedule = prepared_recommendation_schedule()
+        with patch("urllib.request.urlopen", side_effect=AssertionError("recommendation must not fetch sources")), patch(
+            "src.draft_advisor.schedule.build_schedule_snapshot",
+            side_effect=AssertionError("recommendation must not rebuild the season schedule"),
+        ):
+            started = time.perf_counter()
+            first = calculate(state, snapshot, clock=lambda: 3.0, schedule=schedule)
+            second = calculate(state, snapshot, clock=lambda: 3.0, schedule=schedule)
+            elapsed = time.perf_counter() - started
+        self.assertEqual(first, second)
+        self.assertLess(elapsed, 0.5)
+        candidates = [first["calculated_pick"], *first["backup_picks"]]
+        self.assertTrue(all(candidate["schedule_data_quality"] == "complete" for candidate in candidates))
 
     def test_deterministic_evidence_model_eligibility_and_primary_value(self) -> None:
         env, _ = setup_fixture(self.tmp_path, live=True)

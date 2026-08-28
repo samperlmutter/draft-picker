@@ -8,7 +8,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from src.draft_advisor.replay import replay
+from src.draft_advisor.schedule import build_schedule_snapshot
 from tests.test_cli import ROOT, write_json
 
 
@@ -92,6 +95,34 @@ def build_bundle() -> dict:
     return {"initial_state": state, "events": events, "value_snapshots": [snapshot, refreshed], "value_refreshes": [{"before_pick": 90, "snapshot_index": 1}], "trade_checks": trade_checks}
 
 
+def build_replay_schedule(bundle: dict) -> dict:
+    """Build a complete, source-free schedule context for the replay fixture."""
+    state = bundle["initial_state"]
+    players = bundle["value_snapshots"][0]["players"]
+    payload = {
+        "season": 2026,
+        "source": "fixture-replay-schedule",
+        "regular_season_weeks": [1, 2],
+        "playoff_weeks": [3],
+        "games": [
+            {"game_id": "fixture-1", "week": 1, "home_team": "SCHEDULE-A", "away_team": "SCHEDULE-B"},
+            {"game_id": "fixture-2", "week": 2, "home_team": "SCHEDULE-A", "away_team": "SCHEDULE-B"},
+            {"game_id": "fixture-3", "week": 3, "home_team": "SCHEDULE-A", "away_team": "SCHEDULE-B"},
+        ],
+        "opponent_ratings": {
+            "SCHEDULE-A": {"defense": {"QB": 0.0, "RB": 0.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}},
+            "SCHEDULE-B": {"defense": {"QB": 0.0, "RB": 0.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}},
+        },
+    }
+    return build_schedule_snapshot(
+        payload,
+        players,
+        state["league_rules"],
+        season=2026,
+        clock=lambda: 17.0,
+    )
+
+
 class ReplayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(dir="/private/tmp")
@@ -132,6 +163,42 @@ class ReplayTests(unittest.TestCase):
         text = self.run_replay(json_output=False)
         self.assertEqual(text.returncode, 0)
         self.assertIn("Replay PASSED: 180 picks, 15 Participant turns", text.stdout)
+
+    def test_prepared_schedule_context_is_replayed_without_source_requests(self) -> None:
+        bundle = build_bundle()
+        bundle["schedule_snapshot"] = build_replay_schedule(bundle)
+        write_json(self.input_path, bundle)
+        with patch("urllib.request.urlopen", side_effect=AssertionError("replay must not fetch sources")):
+            direct = replay(bundle)
+        self.assertTrue(direct["passed"], direct["first_failure"])
+        first = self.run_replay()
+        second = self.run_replay()
+        self.assertEqual(first.returncode, 0, first.stderr or first.stdout)
+        self.assertEqual(second.returncode, 0, second.stderr or second.stdout)
+        self.assertEqual(first.stdout, second.stdout)
+        result = json.loads(first.stdout)
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["checks"]["schedule_context_replayed"])
+        self.assertEqual(result["summary"]["schedule_context"]["data_quality"], "complete")
+        self.assertTrue(result["summary"]["schedule_context"]["provided"])
+        for item in result["recommendations"]:
+            candidates = [item["calculated_pick"], *item["backup_picks"]]
+            self.assertTrue(all(candidate["schedule_data_quality"] == "complete" for candidate in candidates))
+            self.assertTrue(all(candidate["schedule_adjustment"] == 0.0 for candidate in candidates))
+
+    def test_replay_rejects_incompatible_schedule_cache_with_context(self) -> None:
+        bundle = build_bundle()
+        schedule = build_replay_schedule(bundle)
+        schedule["league_rules_identity"] = "stale-cache"
+        bundle["schedule_snapshot"] = schedule
+        write_json(self.input_path, bundle)
+        failed = self.run_replay()
+        self.assertNotEqual(failed.returncode, 0)
+        result = json.loads(failed.stdout)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["first_failure"]["stage"], "schedule")
+        self.assertEqual(result["first_failure"]["schedule_identity"], "stale-cache")
+        self.assertIn("League Rules identity", result["first_failure"]["message"])
 
     def test_failure_reports_first_pick_with_context(self) -> None:
         bundle = build_bundle()

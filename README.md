@@ -53,5 +53,9 @@ current-draft `player` with `player_id` or a remaining `pick` with `pick_no`.
 
 `replay` accepts a self-contained initial Draft State, the same ordered pick-event
 objects written by the monitor, complete player-value snapshots, refresh points,
-and confirmed trade checks. It performs no source requests and returns a concise
-readiness summary or the first failing pick/evaluation with diagnostic context.
+an optional prepared `schedule_snapshot`, and confirmed trade checks. It validates
+the schedule cache identity against the initial League Rules, performs no source
+requests, and returns a concise readiness summary or the first failing
+pick/evaluation with diagnostic context. Text Recommendations include compact
+regular-season, playoff, and roster-collision evidence; JSON retains the detailed
+weekly evidence.

@@ -66,6 +66,14 @@ def _recommendation_text(recommendation: dict[str, Any]) -> str:
     pick = recommendation["calculated_pick"]
     lines = [f"Calculated Pick: {pick['name']} ({pick['position']}, score {pick['draft_score']:.3f})"]
     lines.append(f"Evidence: {pick['roster_fit']}; survival {pick['expected_survival_to_next_turn']:.0%}; scarcity {pick['scarcity']:.3f}")
+    components = pick.get("components") or {}
+    lines.append(
+        "Schedule: "
+        f"{pick.get('schedule_data_quality', 'unavailable')}; "
+        f"regular {float(components.get('regular_season_matchup', 0.0)):+.3f}; "
+        f"playoffs {float(components.get('playoff_matchup', 0.0)):+.3f}; "
+        f"collision {float(components.get('roster_collision', 0.0)):+.3f}"
+    )
     if pick.get("injury_warning"):
         lines.append(f"Warning: {pick['injury_warning']}")
     lines.append("Backup Picks:")
