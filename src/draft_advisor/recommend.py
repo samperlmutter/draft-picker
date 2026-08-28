@@ -8,10 +8,18 @@ from typing import Any, Callable
 
 FLEX_POSITIONS = {"RB", "WR", "TE"}
 BENCH = {"BN", "BENCH", "IR", "TAXI"}
+REGULAR_SEASON_SCHEDULE_CAP = 2.5
+PLAYOFF_SCHEDULE_CAP = 3.5
+SCHEDULE_ADJUSTMENT_CAP = REGULAR_SEASON_SCHEDULE_CAP + PLAYOFF_SCHEDULE_CAP
 
 
 class InsufficientCandidates(ValueError):
     """The board cannot satisfy the five-candidate public contract."""
+
+
+def _position(value: Any) -> str:
+    normalized = str(value or "").upper()
+    return "DEF" if normalized == "DST" else normalized
 
 
 def _position_requirements(state: dict[str, Any]) -> Counter[str]:
@@ -22,8 +30,8 @@ def _position_requirements(state: dict[str, Any]) -> Counter[str]:
             continue
         if "FLEX" in upper:
             requirements["FLEX"] += 1
-        elif upper in {"QB", "RB", "WR", "TE", "K", "DEF"}:
-            requirements[upper] += 1
+        elif upper in {"QB", "RB", "WR", "TE", "K", "DEF", "DST"}:
+            requirements[_position(upper)] += 1
     return requirements
 
 
@@ -32,7 +40,7 @@ def _roster_positions(state: dict[str, Any], values: dict[str, Any], roster_id: 
     roster = state.get("rosters", {}).get(str(roster_id), {})
     for player_id in roster.get("player_ids") or roster.get("drafted_player_ids") or []:
         player = values.get(str(player_id), {})
-        position = player.get("position")
+        position = _position(player.get("position"))
         if position:
             result[str(position).upper()] += 1
     return result
@@ -62,7 +70,7 @@ def _projected_starter_ids(
     flex_candidates: list[str] = []
     for raw_player_id in player_ids:
         player_id = str(raw_player_id)
-        position = str(players.get(player_id, {}).get("position") or "").upper()
+        position = _position(players.get(player_id, {}).get("position"))
         if remaining[position] > 0:
             starters.add(player_id)
             remaining[position] -= 1
@@ -92,7 +100,148 @@ def _bye_week_penalty(
     return penalty
 
 
-def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[], float] = time.time) -> dict[str, Any]:
+def _bounded(value: float, lower: float, upper: float) -> float:
+    return min(upper, max(lower, value))
+
+
+def _finite_number(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _empty_schedule_evidence(data_quality: str = "unavailable") -> dict[str, Any]:
+    return {
+        "data_quality": data_quality,
+        "regular_season": {
+            "average_matchup_delta": None,
+            "matchup_delta_total": 0.0,
+            "rated_games": 0,
+            "missing_ratings": 0,
+            "games": 0,
+            "byes": 0,
+            "adjustment": 0.0,
+        },
+        "playoffs": {
+            "average_matchup_delta": None,
+            "matchup_delta_total": 0.0,
+            "rated_games": 0,
+            "missing_ratings": 0,
+            "games": 0,
+            "byes": 0,
+            "adjustment": 0.0,
+        },
+        "playoff_weight_applied": False,
+        "weekly_matchups": [],
+        "schedule_adjustment": 0.0,
+        "snapshot_updated_at": None,
+    }
+
+
+def _schedule_evidence(
+    state: dict[str, Any], schedule: dict[str, Any] | None, player_id: str
+) -> dict[str, Any]:
+    """Read prepared matchup values without deriving season schedule data."""
+    evidence = _empty_schedule_evidence()
+    if not isinstance(schedule, dict):
+        return evidence
+
+    quality = schedule.get("data_quality")
+    quality_status = quality.get("status") if isinstance(quality, dict) else None
+    evidence["snapshot_updated_at"] = schedule.get("updated_at")
+    if quality_status != "complete":
+        evidence["data_quality"] = quality_status or "incomplete"
+        return evidence
+
+    summaries = schedule.get("player_schedule_summaries")
+    summary = summaries.get(player_id) if isinstance(summaries, dict) else None
+    matchups = schedule.get("player_matchups")
+    weekly = matchups.get(player_id) if isinstance(matchups, dict) else None
+    if not isinstance(summary, dict) or not isinstance(weekly, dict):
+        evidence["data_quality"] = "incomplete"
+        return evidence
+
+    regular = summary.get("regular_season")
+    playoffs = summary.get("playoffs")
+    if not isinstance(regular, dict) or not isinstance(playoffs, dict):
+        evidence["data_quality"] = "incomplete"
+        return evidence
+
+    evidence["data_quality"] = "complete"
+    evidence["regular_season"] = dict(_summary_evidence(regular))
+    evidence["playoffs"] = dict(_summary_evidence(playoffs))
+    evidence["weekly_matchups"] = [
+        {
+            key: item.get(key)
+            for key in ("week", "opponent", "bye", "home", "matchup_delta")
+            if key in item
+        }
+        for _, item in sorted(
+            weekly.items(),
+            key=lambda pair: int(pair[0]) if str(pair[0]).isdigit() else str(pair[0]),
+        )
+        if isinstance(item, dict)
+    ]
+
+    regular_average = _finite_number(regular.get("average_matchup_delta")) or 0.0
+    regular_adjustment = _bounded(
+        regular_average, -REGULAR_SEASON_SCHEDULE_CAP, REGULAR_SEASON_SCHEDULE_CAP
+    )
+    rules = state.get("league_rules") or {}
+    playoff_window_identified = rules.get("playoff_week_start") is not None
+    playoff_average = _finite_number(playoffs.get("average_matchup_delta")) or 0.0
+    playoff_adjustment = (
+        _bounded(
+            playoff_average * 2.0,
+            -PLAYOFF_SCHEDULE_CAP,
+            PLAYOFF_SCHEDULE_CAP,
+        )
+        if playoff_window_identified
+        else 0.0
+    )
+    if not playoff_window_identified:
+        evidence["playoffs"]["ignored_reason"] = "League Rules do not identify a playoff window"
+    evidence["playoff_weight_applied"] = playoff_window_identified
+    evidence["regular_season"]["adjustment"] = round(regular_adjustment, 3)
+    evidence["playoffs"]["adjustment"] = round(playoff_adjustment, 3)
+    evidence["schedule_adjustment"] = round(
+        _bounded(
+            regular_adjustment + playoff_adjustment,
+            -SCHEDULE_ADJUSTMENT_CAP,
+            SCHEDULE_ADJUSTMENT_CAP,
+        ),
+        3,
+    )
+    return evidence
+
+
+def _summary_evidence(summary: dict[str, Any]) -> dict[str, Any]:
+    """Copy only explainable, scalar summary fields from a Schedule Snapshot."""
+    evidence: dict[str, Any] = {}
+    for key in (
+        "weeks", "games", "byes", "rated_games", "missing_ratings",
+        "average_matchup_delta", "matchup_delta_total",
+    ):
+        value = summary.get(key)
+        if key == "weeks":
+            evidence[key] = list(value) if isinstance(value, list) else []
+        elif key in {"average_matchup_delta", "matchup_delta_total"}:
+            evidence[key] = _finite_number(value)
+        else:
+            evidence[key] = value if isinstance(value, (int, float)) else 0
+    evidence["adjustment"] = 0.0
+    return evidence
+
+
+def calculate(
+    state: dict[str, Any],
+    snapshot: dict[str, Any],
+    clock: Callable[[], float] = time.time,
+    *,
+    schedule: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     available = {
         player_id: player for player_id, player in snapshot["players"].items()
         if player_id not in set(state.get("selected_player_ids") or [])
@@ -140,7 +289,7 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
 
     candidates = []
     for player_id, player in available.items():
-        position = str(player.get("position") or "").upper()
+        position = _position(player.get("position"))
         if not position:
             continue
         if position in {"K", "DEF"} and (roster[position] >= requirements[position] or current_round < max(1, total_rounds - 1)):
@@ -176,7 +325,9 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
             bye_week, position, fit, roster_byes, starter_byes, roster_positions_by_bye
         )
         diversity_tiebreaker = team_tiebreaker + bye_week_penalty
-        score = quality + fit + scarcity + wait_cost + demand + round_strategy + injury_penalty + diversity_tiebreaker
+        schedule_evidence = _schedule_evidence(state, schedule, player_id)
+        schedule_adjustment = float(schedule_evidence["schedule_adjustment"])
+        score = quality + fit + scarcity + wait_cost + demand + round_strategy + injury_penalty + diversity_tiebreaker + schedule_adjustment
         components = {
             "primary_value": round(quality, 3), "roster_fit": round(fit, 3),
             "positional_scarcity": round(scarcity, 3), "wait_cost": round(wait_cost, 3),
@@ -184,6 +335,9 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
             "injury_penalty": injury_penalty,
             "bye_week_penalty": round(bye_week_penalty, 3),
             "diversity_tiebreaker": round(diversity_tiebreaker, 3),
+            "regular_season_matchup": schedule_evidence["regular_season"]["adjustment"],
+            "playoff_matchup": schedule_evidence["playoffs"]["adjustment"],
+            "schedule_adjustment": schedule_adjustment,
         }
         candidates.append({
             "player_id": player_id, "name": player.get("name"), "team": player.get("team"), "position": position,
@@ -194,6 +348,8 @@ def calculate(state: dict[str, Any], snapshot: dict[str, Any], clock: Callable[[
             "relevant_opponent_needs": {position: need_count} if need_count else {},
             "position_run_survival_penalty": run_pressure,
             "adp": adp,
+            "schedule_data_quality": schedule_evidence["data_quality"],
+            "schedule_evidence": schedule_evidence,
         })
     candidates.sort(key=lambda item: (-item["draft_score"], -float(available[item["player_id"]]["value"]), item["name"] or "", item["player_id"]))
     if len(candidates) < 5:

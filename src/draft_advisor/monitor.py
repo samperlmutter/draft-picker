@@ -45,12 +45,12 @@ def refresh(config: Config, storage: Storage, client: SleeperClient | None = Non
         storage.append_events(events)
         storage.write_state(state)
         snapshot, values_refreshed = ensure_values(config, storage, client)
-        ensure_schedule(config, storage, state, snapshot, client)
+        schedule, schedule_refreshed = ensure_schedule(config, storage, state, snapshot, client)
         state_changed = previous is None or _material_state(previous) != _material_state(state)
         recommendation_missing = not storage.recommendation_path.exists()
-        if state["draft"]["status"] != "complete" and (state_changed or values_refreshed or recommendation_missing):
+        if state["draft"]["status"] != "complete" and (state_changed or values_refreshed or schedule_refreshed or recommendation_missing):
             try:
-                recalculate(storage, state, snapshot)
+                recalculate(storage, state, snapshot, schedule=schedule)
             except InsufficientCandidates:
                 # A depleted synthetic or end-stage board may not have the five
                 # candidates required by the public recommendation contract. Keep

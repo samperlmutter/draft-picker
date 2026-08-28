@@ -84,11 +84,12 @@ def _position_rating(
     ratings: dict[str, Any], opponent: str, position: str
 ) -> tuple[float | None, str]:
     opponent_ratings = ratings.get(opponent) or {}
-    unit = "offense" if position == "DEF" else "defense"
+    is_defense = position in {"DEF", "DST"}
+    unit = "offense" if is_defense else "defense"
     values = _unit_ratings(opponent_ratings, unit)
     candidates = [position]
-    if position == "DEF":
-        candidates += ["DST"]
+    if is_defense:
+        candidates += ["DEF", "DST"]
     if position == "K":
         candidates += ["ALL", "FLEX"]
     candidates += ["ALL", "FLEX", "default"]

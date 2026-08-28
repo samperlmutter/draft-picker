@@ -114,8 +114,23 @@ def ensure_schedule(
         raise
 
 
-def recalculate(storage: Storage, state: dict[str, Any] | None = None, snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
-    recommendation = calculate(state or storage.read_state(), snapshot or read_values(storage))
+def recalculate(
+    storage: Storage,
+    state: dict[str, Any] | None = None,
+    snapshot: dict[str, Any] | None = None,
+    schedule: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    current_state = state or storage.read_state()
+    current_snapshot = snapshot or read_values(storage)
+    if schedule is None:
+        try:
+            schedule = read_schedule(storage)
+        except ValueError:
+            # Schedule context is optional; the core Recommendation remains
+            # available with neutral schedule components when it is absent or
+            # malformed.
+            schedule = None
+    recommendation = calculate(current_state, current_snapshot, schedule=schedule)
     storage.write_json(storage.recommendation_path, recommendation)
     return recommendation
 

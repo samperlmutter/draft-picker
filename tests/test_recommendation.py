@@ -8,7 +8,100 @@ from collections import Counter
 from pathlib import Path
 
 from src.draft_advisor.recommend import _bye_week_penalty
+from src.draft_advisor.recommend import calculate
+from src.draft_advisor.schedule import build_schedule_snapshot
 from tests.test_cli import cli, setup_fixture, write_json
+
+
+def schedule_fixture(position: str = "QB", *, extreme: bool = False, playoff_only: bool = False) -> dict:
+    week_one_other = {"home_team": "EEE", "away_team": "BBB"} if playoff_only else {"home_team": "EEE", "away_team": "FFF"}
+    games = [
+        {"game_id": "g1", "week": 1, "home_team": "AAA", "away_team": "FFF" if playoff_only else "BBB"},
+        {"game_id": "g2", "week": 2, "home_team": "AAA", "away_team": "BBB"},
+        {"game_id": "g3", "week": 3, "home_team": "AAA", "away_team": "BBB"},
+        {"game_id": "g4", "week": 1, "home_team": "CCC", "away_team": "DDD"},
+        {"game_id": "g5", "week": 2, "home_team": "CCC", "away_team": "DDD"},
+        {"game_id": "g6", "week": 3, "home_team": "CCC", "away_team": "DDD"},
+        {"game_id": "g7", "week": 1, **week_one_other},
+        {"game_id": "g8", "week": 2, "home_team": "EEE", "away_team": "FFF"},
+        {"game_id": "g9", "week": 3, "home_team": "EEE", "away_team": "FFF"},
+    ]
+    favorable = 100.0 if extreme else 2.0
+    unfavorable = -100.0 if extreme else -2.0
+    unit = "offense" if position == "DEF" else "defense"
+    return {
+        "season": 2026,
+        "source": "fixture-recommendation-schedule",
+        "teams": ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"],
+        "regular_season_weeks": [1] if playoff_only else [1, 2],
+        "playoff_weeks": [3],
+        "games": games,
+        "opponent_ratings": {
+            "AAA": {unit: {position: 0.0}},
+            "BBB": {unit: {position: favorable}},
+            "DDD": {unit: {position: unfavorable}},
+            "EEE": {unit: {position: 0.0}},
+            "FFF": {unit: {position: 0.0}},
+        },
+    }
+
+
+def recommendation_players(position: str = "QB") -> dict[str, dict[str, object]]:
+    teams = ["AAA", "CCC", "EEE", "FFF", "EEE"]
+    return {
+        player_id: {
+            "player_id": player_id,
+            "name": name,
+            "team": team,
+            "position": position,
+            "status": "Active",
+            "value": 100.0,
+            "adp": 1.0,
+            "stability": 0.5,
+            "upside": 0.5,
+        }
+        for player_id, name, team in zip(
+            ("fav", "bad", "neutral-a", "neutral-b", "neutral-c"),
+            ("Favorable", "Unfavorable", "Neutral A", "Neutral B", "Neutral C"),
+            teams,
+        )
+    }
+
+
+def recommendation_state(position: str = "QB", *, playoff_window: bool = True) -> dict[str, object]:
+    rules: dict[str, object] = {
+        "name": "Fixture Recommendation League",
+        "season": 2026,
+        "teams": 2,
+        "rounds": 15,
+        "roster_positions": [position, "BN"],
+        "scoring_settings": {},
+    }
+    if playoff_window:
+        rules.update({"playoff_week_start": 3, "playoff_rounds": 1})
+    return {
+        "schema_version": 1,
+        "updated_at": 1.0,
+        "league_rules": rules,
+        "participant": {"roster_id": 8},
+        "selected_player_ids": [],
+        "picks": [],
+        "current_turn": {"pick_no": 1, "round": 14 if position == "DEF" else 1},
+        "participant_next_turn": {"pick_no": 1, "round": 14 if position == "DEF" else 1},
+        "turns": [],
+        "rosters": {"8": {"player_ids": []}},
+    }
+
+
+def prepared_recommendation_schedule(position: str = "QB", *, extreme: bool = False, playoff_only: bool = False) -> dict[str, object]:
+    players = recommendation_players(position)
+    return build_schedule_snapshot(
+        schedule_fixture(position, extreme=extreme, playoff_only=playoff_only),
+        players,
+        recommendation_state(position)["league_rules"],
+        season=2026,
+        clock=lambda: 2.0,
+    )
 
 
 class RecommendationTests(unittest.TestCase):
@@ -167,6 +260,94 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(late.returncode, 0, late.stderr)
         late_candidates = json.loads(cli(env, "recommend", "--json").stdout)
         self.assertIn(late_candidates["calculated_pick"]["position"], {"K", "DEF"})
+
+    def test_cached_schedule_improves_favorable_offensive_matchup(self) -> None:
+        players = recommendation_players()
+        state = recommendation_state()
+        snapshot = {"updated_at": 1.0, "players": players}
+        schedule = prepared_recommendation_schedule()
+
+        recommendation = calculate(state, snapshot, clock=lambda: 3.0, schedule=schedule)
+        candidates = {candidate["player_id"]: candidate for candidate in [
+            recommendation["calculated_pick"], *recommendation["backup_picks"]
+        ]}
+
+        self.assertGreater(
+            candidates["fav"]["components"]["schedule_adjustment"],
+            candidates["bad"]["components"]["schedule_adjustment"],
+        )
+        self.assertEqual(candidates["fav"]["schedule_data_quality"], "complete")
+        self.assertEqual(candidates["fav"]["schedule_evidence"]["weekly_matchups"][0]["week"], 1)
+        self.assertIn("regular_season_matchup", candidates["fav"]["components"])
+        self.assertIn("playoff_matchup", candidates["fav"]["components"])
+
+    def test_cached_schedule_uses_opposing_offense_for_defense(self) -> None:
+        players = recommendation_players("DEF")
+        state = recommendation_state("DEF")
+        schedule = prepared_recommendation_schedule("DEF")
+
+        recommendation = calculate(state, {"updated_at": 1.0, "players": players}, clock=lambda: 3.0, schedule=schedule)
+        candidates = {candidate["player_id"]: candidate for candidate in [
+            recommendation["calculated_pick"], *recommendation["backup_picks"]
+        ]}
+
+        self.assertGreater(
+            candidates["fav"]["components"]["schedule_adjustment"],
+            candidates["bad"]["components"]["schedule_adjustment"],
+        )
+        self.assertEqual(
+            candidates["fav"]["schedule_evidence"]["regular_season"]["average_matchup_delta"],
+            2.0,
+        )
+
+    def test_playoff_value_is_separate_and_requires_league_playoff_window(self) -> None:
+        players = recommendation_players()
+        snapshot = {"updated_at": 1.0, "players": players}
+        schedule = prepared_recommendation_schedule(playoff_only=True)
+        with_playoffs = calculate(
+            recommendation_state(), snapshot, clock=lambda: 3.0, schedule=schedule
+        )
+        without_playoffs = calculate(
+            recommendation_state(playoff_window=False), snapshot, clock=lambda: 3.0, schedule=schedule
+        )
+        with_candidate = next(
+            candidate for candidate in [with_playoffs["calculated_pick"], *with_playoffs["backup_picks"]]
+            if candidate["player_id"] == "fav"
+        )
+        without_candidate = next(
+            candidate for candidate in [without_playoffs["calculated_pick"], *without_playoffs["backup_picks"]]
+            if candidate["player_id"] == "fav"
+        )
+
+        self.assertEqual(with_candidate["components"]["regular_season_matchup"], 0.0)
+        self.assertGreater(with_candidate["components"]["playoff_matchup"], 0.0)
+        self.assertTrue(with_candidate["schedule_evidence"]["playoff_weight_applied"])
+        self.assertEqual(without_candidate["components"]["playoff_matchup"], 0.0)
+        self.assertFalse(without_candidate["schedule_evidence"]["playoff_weight_applied"])
+
+    def test_incomplete_schedule_is_neutral_but_explained(self) -> None:
+        players = recommendation_players()
+        schedule = prepared_recommendation_schedule()
+        schedule["data_quality"] = {"status": "partial", "missing_ratings": [{"week": 2}]}
+        recommendation = calculate(
+            recommendation_state(), {"updated_at": 1.0, "players": players}, clock=lambda: 3.0, schedule=schedule
+        )
+
+        for candidate in [recommendation["calculated_pick"], *recommendation["backup_picks"]]:
+            self.assertEqual(candidate["components"]["schedule_adjustment"], 0.0)
+            self.assertEqual(candidate["schedule_data_quality"], "partial")
+
+    def test_schedule_adjustment_is_bounded(self) -> None:
+        players = recommendation_players()
+        schedule = prepared_recommendation_schedule(extreme=True)
+        recommendation = calculate(
+            recommendation_state(), {"updated_at": 1.0, "players": players}, clock=lambda: 3.0, schedule=schedule
+        )
+
+        for candidate in [recommendation["calculated_pick"], *recommendation["backup_picks"]]:
+            adjustment = candidate["components"]["schedule_adjustment"]
+            self.assertLessEqual(abs(adjustment), 6.0)
+            self.assertEqual(adjustment, candidate["schedule_evidence"]["schedule_adjustment"])
 
     def _extend_players(self, fixtures: Path, count: int, positions: tuple[str, ...] = ("RB", "WR"), value_start: float = 70) -> None:
         players_path = fixtures / "players__nfl.json"
