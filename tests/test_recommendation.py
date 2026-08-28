@@ -104,6 +104,56 @@ def prepared_recommendation_schedule(position: str = "QB", *, extreme: bool = Fa
     )
 
 
+def collision_players() -> dict[str, dict[str, object]]:
+    common = {"status": "Active", "adp": 1.0, "stability": 0.5, "upside": 0.5}
+    return {
+        "roster-rb": {**common, "name": "Roster Runner", "team": "AAA", "position": "RB", "value": 90.0},
+        "roster-wr": {**common, "name": "Roster Receiver", "team": "DDD", "position": "WR", "value": 80.0},
+        "roster-flex": {**common, "name": "Roster Tight End", "team": "EEE", "position": "TE", "value": 70.0},
+        "direct-wr": {**common, "name": "Direct Receiver", "team": "BBB", "position": "WR", "value": 100.0},
+        "flex-te": {**common, "name": "Flex Tight End", "team": "BBB", "position": "TE", "value": 99.0},
+        "bench-rb": {**common, "name": "Bench Runner", "team": "BBB", "position": "RB", "value": 98.0},
+        "teammate-wr": {**common, "name": "Teammate Receiver", "team": "AAA", "position": "WR", "value": 97.0},
+        "neutral-te": {**common, "name": "Neutral Tight End", "team": "CCC", "position": "TE", "value": 96.0},
+    }
+
+
+def collision_state(roster_ids: list[str]) -> dict[str, object]:
+    state = recommendation_state()
+    state["league_rules"]["roster_positions"] = ["RB", "WR", "FLEX", "BN"]
+    state["rosters"]["8"]["player_ids"] = roster_ids
+    return state
+
+
+def prepared_collision_schedule(
+    players: dict[str, dict[str, object]], state: dict[str, object], weeks: list[int]
+) -> dict[str, object]:
+    teams = sorted({str(player["team"]) for player in players.values()})
+    ratings = {
+        team: {"defense": {"RB": 0.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}}
+        for team in teams
+    }
+    payload = {
+        "season": 2026,
+        "source": "fixture-roster-collision-schedule",
+        "teams": teams,
+        "regular_season_weeks": weeks,
+        "playoff_weeks": [],
+        "games": [
+            {"game_id": f"aaa-bbb-{week}", "week": week, "home_team": "AAA", "away_team": "BBB"}
+            for week in weeks
+        ],
+        "opponent_ratings": ratings,
+    }
+    return build_schedule_snapshot(
+        payload,
+        players,
+        state["league_rules"],
+        season=2026,
+        clock=lambda: 2.0,
+    )
+
+
 class RecommendationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(dir="/private/tmp")
@@ -348,6 +398,100 @@ class RecommendationTests(unittest.TestCase):
             adjustment = candidate["components"]["schedule_adjustment"]
             self.assertLessEqual(abs(adjustment), 6.0)
             self.assertEqual(adjustment, candidate["schedule_evidence"]["schedule_adjustment"])
+
+    def test_direct_starter_collision_is_reported_for_each_affected_week(self) -> None:
+        players = collision_players()
+        state = collision_state(["roster-rb"])
+        schedule = prepared_collision_schedule(players, state, [1, 2])
+        recommendation = calculate(
+            state, {"updated_at": 1.0, "players": players}, clock=lambda: 3.0, schedule=schedule
+        )
+
+        candidate = next(
+            item for item in [recommendation["calculated_pick"], *recommendation["backup_picks"]]
+            if item["player_id"] == "direct-wr"
+        )
+        collisions = candidate["schedule_evidence"]["roster_collision"]
+        self.assertTrue(collisions["candidate_is_projected_starter"])
+        self.assertEqual(collisions["projected_starter_ids"], ["direct-wr", "roster-rb"])
+        self.assertEqual(
+            collisions["collision_weeks"],
+            [
+                {"week": 1, "player_ids": ["direct-wr", "roster-rb"], "teams": ["AAA", "BBB"]},
+                {"week": 2, "player_ids": ["direct-wr", "roster-rb"], "teams": ["AAA", "BBB"]},
+            ],
+        )
+        self.assertEqual(collisions["adjustment"], -1.5)
+        self.assertEqual(candidate["components"]["roster_collision"], -1.5)
+        self.assertEqual(candidate["roster_collision_adjustment"], -1.5)
+
+    def test_flex_starter_collision_is_counted_but_bench_player_is_not(self) -> None:
+        players = collision_players()
+        flex_state = collision_state(["roster-rb"])
+        flex_schedule = prepared_collision_schedule(players, flex_state, [1])
+        flex_recommendation = calculate(
+            flex_state,
+            {"updated_at": 1.0, "players": players},
+            clock=lambda: 3.0,
+            schedule=flex_schedule,
+        )
+        flex_candidate = next(
+            item for item in [flex_recommendation["calculated_pick"], *flex_recommendation["backup_picks"]]
+            if item["player_id"] == "flex-te"
+        )
+        self.assertTrue(flex_candidate["schedule_evidence"]["roster_collision"]["candidate_is_projected_starter"])
+        self.assertEqual(flex_candidate["components"]["roster_collision"], -0.75)
+
+        bench_state = collision_state(["roster-rb", "roster-wr", "roster-flex"])
+        bench_schedule = prepared_collision_schedule(players, bench_state, [1])
+        bench_recommendation = calculate(
+            bench_state,
+            {"updated_at": 1.0, "players": players},
+            clock=lambda: 3.0,
+            schedule=bench_schedule,
+        )
+        bench_candidate = next(
+            item for item in [bench_recommendation["calculated_pick"], *bench_recommendation["backup_picks"]]
+            if item["player_id"] == "bench-rb"
+        )
+        bench_collisions = bench_candidate["schedule_evidence"]["roster_collision"]
+        self.assertFalse(bench_collisions["candidate_is_projected_starter"])
+        self.assertEqual(bench_collisions["projected_starter_ids"], ["roster-flex", "roster-rb", "roster-wr"])
+        self.assertEqual(bench_collisions["collision_weeks"], [])
+        self.assertEqual(bench_candidate["components"]["roster_collision"], 0.0)
+
+    def test_same_team_teammates_are_not_roster_collisions(self) -> None:
+        players = collision_players()
+        state = collision_state(["roster-rb"])
+        schedule = prepared_collision_schedule(players, state, [1, 2])
+        recommendation = calculate(
+            state, {"updated_at": 1.0, "players": players}, clock=lambda: 3.0, schedule=schedule
+        )
+        teammate = next(
+            item for item in [recommendation["calculated_pick"], *recommendation["backup_picks"]]
+            if item["player_id"] == "teammate-wr"
+        )
+        collisions = teammate["schedule_evidence"]["roster_collision"]
+        self.assertTrue(collisions["candidate_is_projected_starter"])
+        self.assertEqual(collisions["collision_weeks"], [])
+        self.assertEqual(collisions["adjustment"], 0.0)
+
+    def test_multiple_collision_weeks_are_bounded(self) -> None:
+        players = collision_players()
+        state = collision_state(["roster-rb"])
+        schedule = prepared_collision_schedule(players, state, [1, 2, 3, 4, 5])
+        recommendation = calculate(
+            state, {"updated_at": 1.0, "players": players}, clock=lambda: 3.0, schedule=schedule
+        )
+        candidate = next(
+            item for item in [recommendation["calculated_pick"], *recommendation["backup_picks"]]
+            if item["player_id"] == "direct-wr"
+        )
+        collisions = candidate["schedule_evidence"]["roster_collision"]
+        self.assertEqual(len(collisions["collision_weeks"]), 5)
+        self.assertEqual(collisions["adjustment"], -3.0)
+        self.assertEqual(candidate["components"]["roster_collision"], -3.0)
+        self.assertGreater(candidate["components"]["primary_value"], abs(collisions["adjustment"]))
 
     def _extend_players(self, fixtures: Path, count: int, positions: tuple[str, ...] = ("RB", "WR"), value_start: float = 70) -> None:
         players_path = fixtures / "players__nfl.json"

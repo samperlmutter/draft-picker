@@ -11,6 +11,8 @@ BENCH = {"BN", "BENCH", "IR", "TAXI"}
 REGULAR_SEASON_SCHEDULE_CAP = 2.5
 PLAYOFF_SCHEDULE_CAP = 3.5
 SCHEDULE_ADJUSTMENT_CAP = REGULAR_SEASON_SCHEDULE_CAP + PLAYOFF_SCHEDULE_CAP
+ROSTER_COLLISION_PENALTY_PER_WEEK = 0.75
+ROSTER_COLLISION_ADJUSTMENT_CAP = 3.0
 
 
 class InsufficientCandidates(ValueError):
@@ -81,6 +83,92 @@ def _projected_starter_ids(
     return starters
 
 
+def _empty_roster_collision_evidence(data_quality: str = "unavailable") -> dict[str, Any]:
+    return {
+        "data_quality": data_quality,
+        "candidate_is_projected_starter": False,
+        "projected_starter_ids": [],
+        "collision_weeks": [],
+        "adjustment": 0.0,
+    }
+
+
+def _roster_collision_evidence(
+    player_ids: list[Any],
+    players: dict[str, Any],
+    requirements: Counter[str],
+    schedule: dict[str, Any] | None,
+    candidate_id: str,
+) -> dict[str, Any]:
+    """Evaluate only candidate-induced collisions using prepared team lookups."""
+    projected_starters = _projected_starter_ids(
+        [*player_ids, candidate_id], players, requirements
+    )
+    evidence = _empty_roster_collision_evidence()
+    evidence["projected_starter_ids"] = sorted(projected_starters)
+    evidence["candidate_is_projected_starter"] = candidate_id in projected_starters
+    quality = schedule.get("data_quality") if isinstance(schedule, dict) else None
+    quality_status = quality.get("status") if isinstance(quality, dict) else None
+    evidence["data_quality"] = quality_status or (
+        "incomplete" if isinstance(schedule, dict) else "unavailable"
+    )
+    if not evidence["candidate_is_projected_starter"]:
+        return evidence
+
+    if quality_status != "complete":
+        return evidence
+    team_collisions = schedule.get("team_collisions")
+    if not isinstance(team_collisions, dict):
+        evidence["data_quality"] = "incomplete"
+        return evidence
+
+    candidate_team = str(players.get(candidate_id, {}).get("team") or "").strip().upper()
+    if not candidate_team:
+        return evidence
+
+    collisions_by_week: dict[int, dict[str, set[str]]] = {}
+    for other_id in sorted(projected_starters - {candidate_id}):
+        other_team = str(players.get(other_id, {}).get("team") or "").strip().upper()
+        # Same-team players are teammates in the same game, not opposing
+        # roster collisions. The prepared lookup only contains opposing pairs,
+        # but retaining this guard makes the relationship explicit here too.
+        if not other_team or other_team == candidate_team:
+            continue
+        key = "|".join(sorted((candidate_team, other_team)))
+        weeks = team_collisions.get(key)
+        if not isinstance(weeks, list):
+            continue
+        for raw_week in weeks:
+            try:
+                week = int(raw_week)
+            except (TypeError, ValueError):
+                continue
+            collision = collisions_by_week.setdefault(
+                week, {"player_ids": set(), "teams": set()}
+            )
+            collision["player_ids"].update((candidate_id, other_id))
+            collision["teams"].update((candidate_team, other_team))
+
+    collision_weeks = [
+        {
+            "week": week,
+            "player_ids": sorted(collision["player_ids"]),
+            "teams": sorted(collision["teams"]),
+        }
+        for week, collision in sorted(collisions_by_week.items())
+    ]
+    evidence["collision_weeks"] = collision_weeks
+    evidence["adjustment"] = round(
+        _bounded(
+            -len(collision_weeks) * ROSTER_COLLISION_PENALTY_PER_WEEK,
+            -ROSTER_COLLISION_ADJUSTMENT_CAP,
+            0.0,
+        ),
+        3,
+    )
+    return evidence
+
+
 def _bye_week_penalty(
     bye_week: str, position: str, fit: float, roster_byes: Counter[str],
     starter_byes: Counter[str], roster_positions_by_bye: Counter[tuple[str, str]],
@@ -137,6 +225,7 @@ def _empty_schedule_evidence(data_quality: str = "unavailable") -> dict[str, Any
         "weekly_matchups": [],
         "schedule_adjustment": 0.0,
         "snapshot_updated_at": None,
+        "roster_collision": _empty_roster_collision_evidence(data_quality),
     }
 
 
@@ -327,7 +416,12 @@ def calculate(
         diversity_tiebreaker = team_tiebreaker + bye_week_penalty
         schedule_evidence = _schedule_evidence(state, schedule, player_id)
         schedule_adjustment = float(schedule_evidence["schedule_adjustment"])
-        score = quality + fit + scarcity + wait_cost + demand + round_strategy + injury_penalty + diversity_tiebreaker + schedule_adjustment
+        roster_collision = _roster_collision_evidence(
+            roster_player_ids, snapshot["players"], requirements, schedule, player_id
+        )
+        schedule_evidence["roster_collision"] = roster_collision
+        roster_collision_adjustment = float(roster_collision["adjustment"])
+        score = quality + fit + scarcity + wait_cost + demand + round_strategy + injury_penalty + diversity_tiebreaker + schedule_adjustment + roster_collision_adjustment
         components = {
             "primary_value": round(quality, 3), "roster_fit": round(fit, 3),
             "positional_scarcity": round(scarcity, 3), "wait_cost": round(wait_cost, 3),
@@ -338,6 +432,7 @@ def calculate(
             "regular_season_matchup": schedule_evidence["regular_season"]["adjustment"],
             "playoff_matchup": schedule_evidence["playoffs"]["adjustment"],
             "schedule_adjustment": schedule_adjustment,
+            "roster_collision": roster_collision_adjustment,
         }
         candidates.append({
             "player_id": player_id, "name": player.get("name"), "team": player.get("team"), "position": position,
@@ -350,6 +445,7 @@ def calculate(
             "adp": adp,
             "schedule_data_quality": schedule_evidence["data_quality"],
             "schedule_evidence": schedule_evidence,
+            "roster_collision_adjustment": roster_collision_adjustment,
         })
     candidates.sort(key=lambda item: (-item["draft_score"], -float(available[item["player_id"]]["value"]), item["name"] or "", item["player_id"]))
     if len(candidates) < 5:
