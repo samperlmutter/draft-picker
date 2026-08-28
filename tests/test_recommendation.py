@@ -11,6 +11,8 @@ from unittest.mock import patch
 from src.draft_advisor.recommend import _bye_week_penalty
 from src.draft_advisor.recommend import calculate
 from src.draft_advisor.schedule import build_schedule_snapshot
+from src.draft_advisor.service import recalculate
+from src.draft_advisor.storage import Storage
 from tests.test_cli import cli, setup_fixture, write_json
 
 
@@ -406,6 +408,25 @@ class RecommendationTests(unittest.TestCase):
         for candidate in [recommendation["calculated_pick"], *recommendation["backup_picks"]]:
             self.assertEqual(candidate["components"]["schedule_adjustment"], 0.0)
             self.assertEqual(candidate["schedule_data_quality"], "partial")
+
+    def test_recalculate_ignores_schedule_incompatible_with_current_state(self) -> None:
+        players = recommendation_players()
+        snapshot = {"updated_at": 1.0, "players": players}
+        stale_schedule = prepared_recommendation_schedule()
+        stale_schedule["season"] = 2025
+        stale_schedule["league_rules_identity"] = "stale-cache"
+
+        storage = Storage(self.tmp_path / "runtime")
+        for supplied in (stale_schedule, None):
+            if supplied is None:
+                storage.write_json(storage.schedule_path, stale_schedule)
+            recommendation = recalculate(
+                storage, recommendation_state(), snapshot, schedule=supplied
+            )
+            for candidate in [recommendation["calculated_pick"], *recommendation["backup_picks"]]:
+                self.assertEqual(candidate["schedule_data_quality"], "unavailable")
+                self.assertEqual(candidate["components"]["schedule_adjustment"], 0.0)
+                self.assertEqual(candidate["components"]["roster_collision"], 0.0)
 
     def test_schedule_adjustment_is_bounded(self) -> None:
         players = recommendation_players()

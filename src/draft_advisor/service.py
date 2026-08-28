@@ -10,6 +10,7 @@ from .schedule import (
     build_schedule_snapshot,
     fetch_schedule_payload,
     league_rules_identity,
+    player_input_checksum,
     validate_schedule_snapshot,
 )
 from .sleeper import SleeperClient
@@ -72,6 +73,11 @@ def refresh_schedule(
         clock=clock,
         source_url=source_url,
     ))
+    if (snapshot.get("data_quality") or {}).get("status") != "complete":
+        raise ValueError("schedule refresh is incomplete; preserving the last valid snapshot")
+    rules_season = (state.get("league_rules") or {}).get("season")
+    if rules_season is not None and int(snapshot["season"]) != int(rules_season):
+        raise ValueError("schedule refresh season does not match current Draft State")
     storage.write_json(storage.schedule_path, snapshot)
     return snapshot
 
@@ -95,6 +101,9 @@ def ensure_schedule(
         previous is not None
         and int(previous.get("season", 0)) == season
         and previous.get("league_rules_identity") == league_rules_identity(rules)
+        and previous.get("input_checksum") == player_input_checksum(value_snapshot["players"])
+        and (rules.get("season") is None or int(previous.get("season", 0)) == int(rules["season"]))
+        and (previous.get("data_quality") or {}).get("status") == "complete"
     )
     now = clock()
     if cache_matches_inputs and not force:
@@ -109,9 +118,25 @@ def ensure_schedule(
         return (previous if cache_matches_inputs else None), False
     except ValueError:
         # A malformed refresh must never replace a complete prior snapshot.
-        if cache_matches_inputs:
-            return previous, False
-        raise
+        return (previous if cache_matches_inputs else None), False
+
+
+def _schedule_matches_state(schedule: Any, state: dict[str, Any]) -> bool:
+    if not isinstance(schedule, dict):
+        return False
+    rules = state.get("league_rules") or {}
+    if schedule.get("league_rules_identity") != league_rules_identity(rules):
+        return False
+    current_season = rules.get("season")
+    if current_season is None:
+        current_season = (state.get("draft") or {}).get("season")
+    if current_season is not None:
+        try:
+            if int(schedule.get("season")) != int(current_season):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
 
 
 def recalculate(
@@ -129,6 +154,15 @@ def recalculate(
             # Schedule context is optional; the core Recommendation remains
             # available with neutral schedule components when it is absent or
             # malformed.
+            schedule = None
+    elif not _schedule_matches_state(schedule, current_state):
+        schedule = None
+    if schedule is not None:
+        try:
+            schedule = validate_schedule_snapshot(schedule)
+        except ValueError:
+            schedule = None
+        if schedule is not None and not _schedule_matches_state(schedule, current_state):
             schedule = None
     recommendation = calculate(current_state, current_snapshot, schedule=schedule)
     storage.write_json(storage.recommendation_path, recommendation)

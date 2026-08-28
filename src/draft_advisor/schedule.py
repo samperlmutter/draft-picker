@@ -99,6 +99,19 @@ def _position_rating(
     return None, unit
 
 
+def player_input_checksum(players: dict[str, dict[str, Any]]) -> str:
+    """Identify the player fields used to derive prepared schedule data."""
+    inputs: dict[str, dict[str, str]] = {}
+    for player_id, player in players.items():
+        if not isinstance(player, dict):
+            continue
+        team = _team(player.get("team"))
+        position = str(player.get("position") or "").strip().upper()
+        if team and position:
+            inputs[str(player_id)] = {"team": team, "position": position}
+    return _digest(inputs)
+
+
 def _summary(items: list[dict[str, Any]], weeks: list[int]) -> dict[str, Any]:
     deltas = [item["matchup_delta"] for item in items if item["matchup_delta"] is not None]
     games = sum(not item["bye"] for item in items)
@@ -265,12 +278,7 @@ def build_schedule_snapshot(
     if source_url:
         source["url"] = source_url
     league_rules_copy = deepcopy(league_rules)
-    input_checksum = _digest({
-        "season": season,
-        "payload": payload,
-        "players": player_inputs,
-        "league_rules": league_rules_copy,
-    })
+    input_checksum = player_input_checksum(players)
     quality = "complete" if not missing_ratings else "partial"
     return {
         "schema_version": SCHEDULE_SCHEMA_VERSION,
@@ -318,6 +326,8 @@ def validate_schedule_snapshot(snapshot: Any) -> dict[str, Any]:
     quality = snapshot.get("data_quality", {})
     if not isinstance(quality, dict) or quality.get("status") not in {"complete", "partial"}:
         raise ValueError("schedule snapshot data quality is invalid")
+    if not isinstance(snapshot["input_checksum"], str) or not snapshot["input_checksum"]:
+        raise ValueError("schedule snapshot player input checksum is invalid")
     return snapshot
 
 

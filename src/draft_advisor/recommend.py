@@ -19,7 +19,7 @@ class InsufficientCandidates(ValueError):
     """The board cannot satisfy the five-candidate public contract."""
 
 
-def _position(value: Any) -> str:
+def _canonical_position(value: Any) -> str:
     normalized = str(value or "").upper()
     return "DEF" if normalized == "DST" else normalized
 
@@ -33,7 +33,7 @@ def _position_requirements(state: dict[str, Any]) -> Counter[str]:
         if "FLEX" in upper:
             requirements["FLEX"] += 1
         elif upper in {"QB", "RB", "WR", "TE", "K", "DEF", "DST"}:
-            requirements[_position(upper)] += 1
+            requirements[_canonical_position(upper)] += 1
     return requirements
 
 
@@ -42,7 +42,7 @@ def _roster_positions(state: dict[str, Any], values: dict[str, Any], roster_id: 
     roster = state.get("rosters", {}).get(str(roster_id), {})
     for player_id in roster.get("player_ids") or roster.get("drafted_player_ids") or []:
         player = values.get(str(player_id), {})
-        position = _position(player.get("position"))
+        position = _canonical_position(player.get("position"))
         if position:
             result[str(position).upper()] += 1
     return result
@@ -72,7 +72,7 @@ def _projected_starter_ids(
     flex_candidates: list[str] = []
     for raw_player_id in player_ids:
         player_id = str(raw_player_id)
-        position = _position(players.get(player_id, {}).get("position"))
+        position = _canonical_position(players.get(player_id, {}).get("position"))
         if remaining[position] > 0:
             starters.add(player_id)
             remaining[position] -= 1
@@ -201,26 +201,11 @@ def _finite_number(value: Any) -> float | None:
 
 
 def _empty_schedule_evidence(data_quality: str = "unavailable") -> dict[str, Any]:
+    empty_summary = _empty_summary_evidence()
     return {
         "data_quality": data_quality,
-        "regular_season": {
-            "average_matchup_delta": None,
-            "matchup_delta_total": 0.0,
-            "rated_games": 0,
-            "missing_ratings": 0,
-            "games": 0,
-            "byes": 0,
-            "adjustment": 0.0,
-        },
-        "playoffs": {
-            "average_matchup_delta": None,
-            "matchup_delta_total": 0.0,
-            "rated_games": 0,
-            "missing_ratings": 0,
-            "games": 0,
-            "byes": 0,
-            "adjustment": 0.0,
-        },
+        "regular_season": dict(empty_summary),
+        "playoffs": dict(empty_summary),
         "playoff_weight_applied": False,
         "weekly_matchups": [],
         "schedule_adjustment": 0.0,
@@ -306,6 +291,18 @@ def _schedule_evidence(
     return evidence
 
 
+def _empty_summary_evidence() -> dict[str, Any]:
+    return {
+        "average_matchup_delta": None,
+        "matchup_delta_total": 0.0,
+        "rated_games": 0,
+        "missing_ratings": 0,
+        "games": 0,
+        "byes": 0,
+        "adjustment": 0.0,
+    }
+
+
 def _summary_evidence(summary: dict[str, Any]) -> dict[str, Any]:
     """Copy only explainable, scalar summary fields from a Schedule Snapshot."""
     evidence: dict[str, Any] = {}
@@ -378,7 +375,7 @@ def calculate(
 
     candidates = []
     for player_id, player in available.items():
-        position = _position(player.get("position"))
+        position = _canonical_position(player.get("position"))
         if not position:
             continue
         if position in {"K", "DEF"} and (roster[position] >= requirements[position] or current_round < max(1, total_rounds - 1)):

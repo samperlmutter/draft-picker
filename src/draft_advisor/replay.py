@@ -21,6 +21,8 @@ class ReplayFailure(ValueError):
 
 def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     components = candidate.get("components") or {}
+    schedule_evidence = candidate.get("schedule_evidence") or {}
+    collision = schedule_evidence.get("roster_collision") or {}
     return {
         key: candidate[key] for key in (
             "player_id", "name", "position", "draft_score", "model_judgment_eligible",
@@ -32,6 +34,9 @@ def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         "playoff_matchup": components.get("playoff_matchup", 0.0),
         "schedule_adjustment": components.get("schedule_adjustment", 0.0),
         "roster_collision": components.get("roster_collision", 0.0),
+        "playoff_weight_applied": bool(schedule_evidence.get("playoff_weight_applied")),
+        "candidate_is_projected_starter": bool(collision.get("candidate_is_projected_starter")),
+        "collision_weeks": collision.get("collision_weeks") or [],
     }
 
 
@@ -173,6 +178,11 @@ def replay(bundle: dict[str, Any]) -> dict[str, Any]:
         position_run_seen = False
         close_eligible_seen = False
         outside_limit_seen = False
+        favorable_qb_matchup_seen = False
+        unfavorable_rb_matchup_seen = False
+        playoff_weight_seen = False
+        roster_collision_seen = False
+        flex_collision_seen = False
         keeper_ids = set(map(str, state.get("keepers") or []))
         for event in events:
             pick_no = int(event["pick_no"])
@@ -195,6 +205,23 @@ def replay(bundle: dict[str, Any]) -> dict[str, Any]:
                 if str(event["player_id"]) not in ids:
                     raise ReplayFailure("recommendation", "Participant selection was not one of the five recommended Players", pick_no=pick_no, selected_player_id=event["player_id"], candidate_ids=ids)
                 recommendations.append(_recommendation_summary(recommendation, pick_no))
+                for candidate in candidates:
+                    components = candidate.get("components") or {}
+                    evidence = candidate.get("schedule_evidence") or {}
+                    collision = evidence.get("roster_collision") or {}
+                    regular_matchup = float(components.get("regular_season_matchup", 0.0))
+                    favorable_qb_matchup_seen |= candidate.get("position") == "QB" and regular_matchup > 0
+                    unfavorable_rb_matchup_seen |= candidate.get("position") == "RB" and regular_matchup < 0
+                    playoff_weight_seen |= (
+                        bool(evidence.get("playoff_weight_applied"))
+                        and float(components.get("playoff_matchup", 0.0))
+                        > abs(float(components.get("regular_season_matchup", 0.0)))
+                    )
+                    has_collision = bool(collision.get("collision_weeks"))
+                    roster_collision_seen |= has_collision
+                    # The fixture's p80 is the first extra RB after direct RB
+                    # slots are filled, so this assertion covers FLEX projection.
+                    flex_collision_seen |= has_collision and str(candidate.get("player_id")) == "p80"
                 injured_warning_seen |= any(candidate.get("injury_warning") for candidate in candidates)
                 position_run_seen |= any(candidate.get("position_run_survival_penalty", 0) > 0 for candidate in candidates)
                 close_eligible_seen |= any(candidate["model_judgment_eligible"] for candidate in candidates[1:])
@@ -248,6 +275,10 @@ def replay(bundle: dict[str, Any]) -> dict[str, Any]:
                 for item in recommendations
                 for candidate in [item["calculated_pick"], *item["backup_picks"]]
             ),
+            "schedule_matchup_direction": schedule is None or (favorable_qb_matchup_seen and unfavorable_rb_matchup_seen),
+            "schedule_playoff_weighting": schedule is None or playoff_weight_seen,
+            "schedule_roster_collision": schedule is None or roster_collision_seen,
+            "schedule_flex_collision": schedule is None or flex_collision_seen,
         }
         failed_check = next((name for name, passed in checks.items() if not passed), None)
         if failed_check:

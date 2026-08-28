@@ -174,6 +174,60 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(reused, first)
         self.assertEqual(self.storage.schedule_path.read_bytes(), accepted)
 
+    def test_partial_refresh_preserves_valid_cache_and_has_neutral_fallback(self) -> None:
+        class FixtureClient:
+            def __init__(self) -> None:
+                self.payload: object = fixture_payload()
+
+            def schedule(self, season: int) -> object:
+                return self.payload
+
+        client = FixtureClient()
+        first, _ = ensure_schedule(
+            self.config, self.storage, state(), self.snapshot, client, force=True, clock=lambda: 100.0
+        )
+        accepted = self.storage.schedule_path.read_bytes()
+        partial = fixture_payload()
+        del partial["opponent_ratings"]["BBB"]["defense"]["QB"]
+        client.payload = partial
+        preserved, changed = ensure_schedule(
+            self.config, self.storage, state(), self.snapshot, client, force=True, clock=lambda: 1000.0
+        )
+        self.assertFalse(changed)
+        self.assertEqual(preserved, first)
+        self.assertEqual(self.storage.schedule_path.read_bytes(), accepted)
+
+        self.storage.schedule_path.unlink()
+        fallback, changed = ensure_schedule(
+            self.config, self.storage, state(), self.snapshot, client, force=True, clock=lambda: 1001.0
+        )
+        self.assertIsNone(fallback)
+        self.assertFalse(changed)
+
+    def test_changed_player_inputs_invalidate_schedule_cache(self) -> None:
+        class CountingClient:
+            calls = 0
+
+            def schedule(self, season: int) -> dict:
+                self.calls += 1
+                payload = fixture_payload()
+                payload["opponent_ratings"]["AAA"]["defense"] = {"QB": 0.0}
+                return payload
+
+        client = CountingClient()
+        first, _ = ensure_schedule(
+            self.config, self.storage, state(), self.snapshot, client, force=True, clock=lambda: 100.0
+        )
+        changed_snapshot = deepcopy(self.snapshot)
+        changed_snapshot["players"]["qb-aaa"]["team"] = "CCC"
+        second, changed = ensure_schedule(
+            self.config, self.storage, state(), changed_snapshot, client, clock=lambda: 101.0
+        )
+        self.assertTrue(changed)
+        self.assertEqual(client.calls, 2)
+        self.assertNotEqual(second["input_checksum"], first["input_checksum"])
+        self.assertTrue(second["player_matchups"]["qb-aaa"]["1"]["bye"])
+
     def test_build_is_deterministic_for_identical_fixture_inputs(self) -> None:
         first = build_schedule_snapshot(
             fixture_payload(), players(), state()["league_rules"], season=2026, clock=lambda: 100.0

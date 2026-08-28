@@ -76,7 +76,7 @@ def build_bundle() -> dict:
     roster_positions = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "K", "DEF", "BN", "BN", "BN", "BN", "BN"]
     state = {
         "schema_version": 1, "updated_at": 0, "league_id": "replay-league",
-        "league_rules": {"name": "Replay League", "teams": 12, "rounds": 15, "roster_positions": roster_positions, "scoring_settings": {"rec": 1}},
+        "league_rules": {"name": "Replay League", "season": 2026, "teams": 12, "rounds": 15, "roster_positions": roster_positions, "scoring_settings": {"rec": 1}, "playoff_week_start": 3, "playoff_rounds": 1},
         "participant": {"username": "replay", "user_id": "u8", "roster_id": PARTICIPANT},
         "draft": {"draft_id": "replay-draft", "type": "snake", "status": "drafting", "start_time": 1, "draft_order": {f"u{i}": i for i in range(1, 13)}, "membership_complete": True},
         "picks": [], "latest_pick": None, "selected_player_ids": ["p1"], "keepers": ["p1"],
@@ -99,6 +99,11 @@ def build_replay_schedule(bundle: dict) -> dict:
     """Build a complete, source-free schedule context for the replay fixture."""
     state = bundle["initial_state"]
     players = bundle["value_snapshots"][0]["players"]
+    players["elite-a"]["team"] = "SCHEDULE-A"
+    players["elite-b"]["team"] = "SCHEDULE-B"
+    players["injured-high"]["team"] = "SCHEDULE-D"
+    players["p80"]["team"] = "SCHEDULE-C"
+    players["p80"]["value"] = 820
     payload = {
         "season": 2026,
         "source": "fixture-replay-schedule",
@@ -108,10 +113,15 @@ def build_replay_schedule(bundle: dict) -> dict:
             {"game_id": "fixture-1", "week": 1, "home_team": "SCHEDULE-A", "away_team": "SCHEDULE-B"},
             {"game_id": "fixture-2", "week": 2, "home_team": "SCHEDULE-A", "away_team": "SCHEDULE-B"},
             {"game_id": "fixture-3", "week": 3, "home_team": "SCHEDULE-A", "away_team": "SCHEDULE-B"},
+            {"game_id": "fixture-4", "week": 1, "home_team": "SCHEDULE-C", "away_team": "SCHEDULE-D"},
+            {"game_id": "fixture-5", "week": 2, "home_team": "SCHEDULE-C", "away_team": "SCHEDULE-D"},
+            {"game_id": "fixture-6", "week": 3, "home_team": "SCHEDULE-C", "away_team": "SCHEDULE-D"},
         ],
         "opponent_ratings": {
-            "SCHEDULE-A": {"defense": {"QB": 0.0, "RB": 0.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}},
-            "SCHEDULE-B": {"defense": {"QB": 0.0, "RB": 0.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}},
+            "SCHEDULE-A": {"defense": {"QB": 1.0, "RB": 0.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}},
+            "SCHEDULE-B": {"defense": {"QB": 0.0, "RB": -1.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}},
+            "SCHEDULE-C": {"defense": {"QB": 0.0, "RB": 0.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}},
+            "SCHEDULE-D": {"defense": {"QB": 0.0, "RB": 0.0, "WR": 0.0, "TE": 0.0}, "offense": {"DEF": 0.0}},
         },
     }
     return build_schedule_snapshot(
@@ -154,6 +164,8 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(len(result["recommendations"]), 15)
         self.assertTrue(all(len(item["backup_picks"]) == 4 for item in result["recommendations"]))
         self.assertTrue(all(result["checks"].values()))
+        self.assertTrue(all(candidate["schedule_data_quality"] == "unavailable" for item in result["recommendations"] for candidate in [item["calculated_pick"], *item["backup_picks"]]))
+        self.assertTrue(all(candidate["schedule_adjustment"] == 0.0 for item in result["recommendations"] for candidate in [item["calculated_pick"], *item["backup_picks"]]))
         before_refresh = [item for item in result["recommendations"] if item["pick_no"] < 90]
         after_refresh = [item for item in result["recommendations"] if item["pick_no"] >= 90]
         self.assertFalse(any(candidate["player_id"] == "pool-220" for item in before_refresh for candidate in [item["calculated_pick"], *item["backup_picks"]]))
@@ -184,7 +196,13 @@ class ReplayTests(unittest.TestCase):
         for item in result["recommendations"]:
             candidates = [item["calculated_pick"], *item["backup_picks"]]
             self.assertTrue(all(candidate["schedule_data_quality"] == "complete" for candidate in candidates))
-            self.assertTrue(all(candidate["schedule_adjustment"] == 0.0 for candidate in candidates))
+        self.assertTrue(any(item["calculated_pick"]["schedule_adjustment"] != 0.0 for item in result["recommendations"]))
+        self.assertTrue(result["checks"]["schedule_matchup_direction"])
+        self.assertTrue(result["checks"]["schedule_playoff_weighting"])
+        self.assertTrue(result["checks"]["schedule_roster_collision"])
+        self.assertTrue(result["checks"]["schedule_flex_collision"])
+        flex_candidates = [candidate for item in result["recommendations"] for candidate in [item["calculated_pick"], *item["backup_picks"]] if candidate["player_id"] == "p80"]
+        self.assertTrue(any(candidate["candidate_is_projected_starter"] and candidate["collision_weeks"] for candidate in flex_candidates))
 
     def test_replay_rejects_incompatible_schedule_cache_with_context(self) -> None:
         bundle = build_bundle()

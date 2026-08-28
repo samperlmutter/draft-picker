@@ -43,8 +43,9 @@ use `schedule__<season>.json` (or `schedule.json`) under
 The provider payload supplies games and position-specific opponent matchup
 ratings; the application does not assume Sleeper exposes either one. Prepared
 data is stored as `schedule-snapshot.json` and is reused until its freshness
-window or League Rules identity changes. A failed refresh leaves the previous
-valid snapshot intact.
+window, League Rules identity, or relevant player team/position inputs change.
+Incomplete or failed refreshes leave the previous valid snapshot intact and
+fall back to neutral schedule evidence when no valid snapshot is available.
 
 The repository skill at `.agents/skills/draft-advisor/SKILL.md` provides the thin
 Codex adapter for natural preparation, recommendation, and confirmed-trade
