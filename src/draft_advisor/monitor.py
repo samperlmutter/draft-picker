@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import Config
 from .sleeper import SleeperClient
-from .service import ensure_values, recalculate
+from .service import ensure_schedule, ensure_values, recalculate
 from .recommend import InsufficientCandidates
 from .state import fetch_state
 from .storage import Storage
@@ -45,6 +45,7 @@ def refresh(config: Config, storage: Storage, client: SleeperClient | None = Non
         storage.append_events(events)
         storage.write_state(state)
         snapshot, values_refreshed = ensure_values(config, storage, client)
+        ensure_schedule(config, storage, state, snapshot, client)
         state_changed = previous is None or _material_state(previous) != _material_state(state)
         recommendation_missing = not storage.recommendation_path.exists()
         if state["draft"]["status"] != "complete" and (state_changed or values_refreshed or recommendation_missing):

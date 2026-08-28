@@ -35,6 +35,17 @@ FantasyCalc redraft values are the primary quality signal; Fantasy Football
 Calculator ADP is used only to estimate the cost of waiting. Complete external
 snapshots and recommendations are atomically activated in the runtime directory.
 
+Schedule preparation is an independent optional cache. A schedule provider can
+be supplied through a client `schedule(season)` method, recorded fixtures can
+use `schedule__<season>.json` (or `schedule.json`) under
+`DRAFT_ADVISOR_FIXTURES`, and a configured JSON URL can use
+`schedule_source_url` in the config (with `{season}` as an optional placeholder).
+The provider payload supplies games and position-specific opponent matchup
+ratings; the application does not assume Sleeper exposes either one. Prepared
+data is stored as `schedule-snapshot.json` and is reused until its freshness
+window or League Rules identity changes. A failed refresh leaves the previous
+valid snapshot intact.
+
 The repository skill at `.agents/skills/draft-advisor/SKILL.md` provides the thin
 Codex adapter for natural preparation, recommendation, and confirmed-trade
 requests. Trade JSON contains `confirmed`, `give`, and `receive`; each asset is a

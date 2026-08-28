@@ -13,10 +13,14 @@ def _rules(league: dict[str, Any], draft: dict[str, Any]) -> dict[str, Any]:
     roster_positions = league.get("roster_positions") or []
     return {
         "name": league.get("name"),
+        "season": league.get("season") or draft.get("season"),
         "teams": settings.get("num_teams") or draft.get("settings", {}).get("teams"),
         "rounds": draft.get("settings", {}).get("rounds"),
         "roster_positions": roster_positions,
         "scoring_settings": scoring,
+        "playoff_week_start": settings.get("playoff_week_start"),
+        "playoff_rounds": settings.get("playoff_rounds"),
+        "playoff_teams": settings.get("playoff_teams"),
     }
 
 
