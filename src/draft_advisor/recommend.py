@@ -421,6 +421,7 @@ def calculate(
         round_strategy = 4.0 * ((1 - stage) * stability + stage * upside)
         injury = str(player.get("injury_status") or "").upper()
         injury_penalty = -28.0 if injury in {"OUT", "IR", "PUP"} else 0.0
+        risk_state = str(player.get("risk_state") or "unknown")
         team = str(player.get("team") or "")
         bye_week = str(player.get("bye_week") or "")
         team_tiebreaker = -0.01 * roster_teams[team] if team else 0.0
@@ -441,6 +442,7 @@ def calculate(
             "positional_scarcity": round(scarcity, 3), "wait_cost": round(wait_cost, 3),
             "opponent_demand": round(demand, 3), "round_strategy": round(round_strategy, 3),
             "injury_penalty": injury_penalty,
+            "risk_state": risk_state,
             "bye_week_penalty": round(bye_week_penalty, 3),
             "diversity_tiebreaker": round(diversity_tiebreaker, 3),
             "regular_season_matchup": schedule_evidence["regular_season"]["adjustment"],
@@ -452,6 +454,8 @@ def calculate(
             "player_id": player_id, "name": player.get("name"), "team": player.get("team"), "position": position,
             "draft_score": round(score, 3), "score_type": "relative comparison", "components": components,
             "roster_fit": fit_text, "injury_status": injury or None,
+            "risk_state": risk_state,
+            "risk_visible": risk_state in {"unknown", "stale", "under_review"},
             "injury_warning": f"{injury} designation materially reduces this score" if injury in {"OUT", "IR", "PUP"} else None,
             "scarcity": round(scarcity, 3), "expected_survival_to_next_turn": round(expected_survival, 3),
             "relevant_opponent_needs": {position: need_count} if need_count else {},

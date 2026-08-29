@@ -16,7 +16,7 @@ from .schedule import (
 from .sleeper import SleeperClient
 from .storage import Storage
 from .values import build_value_snapshot, validate_value_snapshot
-from .risk import build_risk_snapshot, validate_authoritative_risk_snapshot, validate_risk
+from .risk import validate_authoritative_risk_snapshot, validate_risk, RISK_PARSER, RISK_PARSER_VERSION, RISK_SCHEMA_VERSION, read_risk_source
 
 
 def validate_risk_fixture(storage: Storage, players: dict[str, Any], clock: Callable[[], float] = time.time) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -29,7 +29,27 @@ def validate_risk_fixture(storage: Storage, players: dict[str, Any], clock: Call
 
 
 def refresh_risk(storage: Storage, players: dict[str, Any], clock: Callable[[], float] = time.time) -> dict[str, Any]:
-    snapshot = validate_authoritative_risk_snapshot(build_risk_snapshot(players, clock=clock))
+    # Validation is an explicit first phase.  A refresh may only promote the
+    # exact validated source; a failed/missing validation must not become truth.
+    validation = storage.read_json(
+        storage.risk_validation_path,
+        "risk validation is required before authoritative refresh",
+    )
+    if validation.get("authoritative") is not False or validation.get("phase") != "validation":
+        raise ValueError("risk validation artifact is not a validation snapshot")
+    if (validation.get("data_quality") or {}).get("status") != "pass":
+        raise ValueError("risk validation failed quality gates")
+    # Promote the recorded validation result.  Do not reread the source here:
+    # the two-run workflow must be deterministic even if the fixture changes.
+    now = clock()
+    _, source = read_risk_source()
+    snapshot = validate_authoritative_risk_snapshot({
+        "schema_version": RISK_SCHEMA_VERSION, "phase": "authoritative", "authoritative": True,
+        "generated_at": validation.get("generated_at", now), "refreshed_at": now,
+        "freshness": {"observed_at": now, "max_age_seconds": 1800}, "source": source,
+        "parser": {"name": RISK_PARSER, "version": RISK_PARSER_VERSION},
+        "players": validation["players"], "data_quality": validation["data_quality"],
+    })
     with storage.publication_lock():
         storage.write_json(storage.risk_path, snapshot)
     return snapshot
@@ -185,8 +205,12 @@ def recalculate(
         current_snapshot["players"] = {pid: dict(player) for pid, player in current_snapshot["players"].items()}
         for pid, item in risk["players"].items():
             player = current_snapshot["players"].get(pid)
-            if player is not None and item.get("state") in {"unavailable", "suspended", "limited", "under_review"}:
-                player["injury_status"] = {"unavailable": "OUT", "suspended": "OUT", "limited": "QUESTIONABLE", "under_review": "QUESTIONABLE"}[item["state"]]
+            if player is not None:
+                state = item.get("state", "unknown")
+                player["risk_state"] = state
+                player["risk_evidence"] = item.get("observations", [])
+                if state in {"unavailable", "suspended", "limited", "under_review"}:
+                    player["injury_status"] = {"unavailable": "OUT", "suspended": "OUT", "limited": "QUESTIONABLE", "under_review": "QUESTIONABLE"}[state]
     if schedule is None:
         try:
             schedule = read_schedule(storage)

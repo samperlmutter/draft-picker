@@ -10,6 +10,7 @@ from .recommend import calculate
 from .schedule import league_rules_identity, validate_schedule_snapshot
 from .trade import evaluate
 from .values import validate_value_snapshot
+from .risk import validate_authoritative_risk_snapshot
 
 
 class ReplayFailure(ValueError):
@@ -100,6 +101,23 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
     if set(map(str, state.get("selected_player_ids") or [])) != set(map(str, state.get("keepers") or [])):
         raise ReplayFailure("input", "initial selected Players must contain only keepers")
     validated_snapshots = [validate_value_snapshot(copy.deepcopy(snapshot)) for snapshot in snapshots]
+    raw_risk = bundle.get("risk_snapshot")
+    risk = None
+    if raw_risk is not None:
+        try:
+            risk = validate_authoritative_risk_snapshot(copy.deepcopy(raw_risk))
+        except (TypeError, ValueError) as exc:
+            raise ReplayFailure("risk", str(exc)) from exc
+        for snapshot in validated_snapshots:
+            for pid, item in risk["players"].items():
+                player = snapshot["players"].get(str(pid))
+                if player is None:
+                    continue
+                state = item.get("state", "unknown")
+                player["risk_state"] = state
+                player["risk_evidence"] = item.get("observations", [])
+                if state in {"unavailable", "suspended", "limited", "under_review"}:
+                    player["injury_status"] = {"unavailable": "OUT", "suspended": "OUT", "limited": "QUESTIONABLE", "under_review": "QUESTIONABLE"}[state]
     raw_schedule = bundle.get("schedule_snapshot")
     if raw_schedule is None and "schedule" in bundle:
         raw_schedule = bundle["schedule"]
