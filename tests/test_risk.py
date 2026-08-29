@@ -3,6 +3,9 @@ from pathlib import Path
 
 from src.draft_advisor.risk import validate_risk
 from src.draft_advisor.risk import build_risk_snapshot, validate_authoritative_risk_snapshot
+import pytest
+
+from src.draft_advisor.risk import apply_risk_overrides, validate_risk
 
 
 def test_risk_validation_prefers_ids_normalizes_and_deduplicates_with_provenance():
@@ -15,7 +18,7 @@ def test_risk_validation_prefers_ids_normalizes_and_deduplicates_with_provenance
     assert snapshot["authoritative"] is False
     assert snapshot["players"]["p1"]["state"] == "unavailable"
     assert len(snapshot["players"]["p1"]["observations"]) == 1
-    assert snapshot["players"]["p1"]["provenance"] == ["team"]
+    assert snapshot["players"]["p1"]["provenance"] == ["team", "wire"]
     assert report["ambiguous_count"] == 1
     assert report["review_count"] == 1
 
@@ -34,3 +37,24 @@ def test_risk_refresh_builds_authoritative_snapshot_from_fixture(monkeypatch, tm
     assert validate_authoritative_risk_snapshot(snapshot)["phase"] == "authoritative"
     assert snapshot["players"]["p1"]["state"] == "unavailable"
     assert snapshot["parser"]["name"] == "draft-advisor-risk"
+
+
+def test_risk_queue_preserves_syndicated_provenance_and_flags_weak_conflict():
+    snapshot, report = validate_risk({"p1": {"full_name": "Alex Example"}}, [
+        {"player_id": "p1", "status": "active", "source": "team", "observed_at": 100, "url": "https://x"},
+        {"player_id": "p1", "status": "active", "source": "wire", "observed_at": 100, "url": "https://x", "kind": "rumor"},
+        {"player_id": "p1", "status": "out", "source": "reporter", "observed_at": 100},
+    ], clock=lambda: 101)
+    evidence = snapshot["players"]["p1"]["observations"][0]
+    assert evidence["sources"] == ["team", "wire"]
+    assert any(item["reason"] == "conflicting_evidence" for item in report["review"])
+    assert any(item["reason"] == "weak_or_disciplinary_evidence" for item in report["review"])
+
+
+def test_overrides_are_dated_auditable_and_weak_discipline_is_rejected():
+    snapshot, _ = validate_risk({"p1": {"full_name": "Alex Example"}}, [], clock=lambda: 100)
+    applied = apply_risk_overrides(snapshot, [{"override_id": "o1", "player_id": "p1", "state": "limited", "source": "commissioner", "reason": "verified", "expires_at": 200}], now=101)
+    assert applied["players"]["p1"]["state"] == "limited"
+    assert applied["overrides"][0]["override_id"] == "o1"
+    with pytest.raises(ValueError):
+        apply_risk_overrides(snapshot, [{"override_id": "o2", "player_id": "p1", "state": "suspended", "source": "blog", "reason": "rumor", "evidence_kind": "rumor", "expires_at": 200}], now=101)
