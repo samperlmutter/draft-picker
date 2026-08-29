@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +15,32 @@ RISK_PARSER_VERSION = "1"
 KNOWN_STATES = {"available", "limited", "unavailable", "suspended", "exempt", "under_review", "unknown", "stale"}
 NEUTRAL_STATES = {"unknown", "stale", "under_review"}
 DISCIPLINE_STATES = {"suspended", "exempt"}
+PENALTY_STATES = {"unavailable", "suspended", "exempt"}
+WEAK_EVIDENCE_KINDS = {"allegation", "rumor", "report", "fine", "investigation", "under_review"}
+
+
+def risk_injury_status(state: Any) -> str | None:
+    normalized = str(state or "unknown")
+    return "OUT" if normalized in PENALTY_STATES else None
+
+
+def risk_is_visible(state: Any) -> bool:
+    return str(state or "unknown") in NEUTRAL_STATES
+
+
+def _timestamp(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    try:
+        return float(text)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
 
 
 def _norm(value: Any) -> str:
@@ -99,6 +126,13 @@ def validate_risk(players: dict[str, Any], observations: list[dict[str, Any]] | 
                     break
         if not candidate_ids and raw.get("name"):
             candidate_ids = names.get(_norm(raw["name"]), [])
+        if name_only:
+            if len(candidate_ids) > 1:
+                ambiguous += 1
+            else:
+                unmatched += 1
+            review.append({"observation_index": index, "source": source, "reason": "name_only", "name": raw.get("name"), "candidate_player_ids": sorted(candidate_ids)})
+            continue
         if len(candidate_ids) != 1:
             reason = "ambiguous" if len(candidate_ids) > 1 else "unmatched"
             if reason == "ambiguous": ambiguous += 1
@@ -111,8 +145,13 @@ def validate_risk(players: dict[str, Any], observations: list[dict[str, Any]] | 
             review.append({"observation_index": index, "source": source, "reason": "missing_timestamp"})
             continue
         state = _state(raw.get("state", raw.get("status")))
-        evidence = {"source": source, "sources": [source], "source_tier": raw.get("source_tier", raw.get("tier")), "evidence_url": raw.get("evidence_url", raw.get("url")), "evidence_urls": [raw.get("evidence_url", raw.get("url"))] if raw.get("evidence_url", raw.get("url")) else [], "observed_at": observed_at, "effective_at": raw.get("effective_at", raw.get("effective_from")), "confidence": raw.get("confidence"), "raw_status": raw.get("status", raw.get("state")), "evidence_kind": str(raw.get("evidence_kind", raw.get("kind", "status"))).lower(), "high_impact": bool(raw.get("high_impact", raw.get("impact") == "high"))}
-        evidence_id = hashlib.sha256(json.dumps({k: evidence[k] for k in ("source", "evidence_url", "observed_at", "raw_status")}, sort_keys=True, default=str).encode()).hexdigest()[:16]
+        evidence_kind = str(raw.get("evidence_kind", raw.get("kind", "status"))).lower()
+        if evidence_kind in WEAK_EVIDENCE_KINDS:
+            state = "unknown"
+        evidence = {"source": source, "sources": [source], "source_tier": raw.get("source_tier", raw.get("tier")), "evidence_url": raw.get("evidence_url", raw.get("url")), "evidence_urls": [raw.get("evidence_url", raw.get("url"))] if raw.get("evidence_url", raw.get("url")) else [], "observed_at": observed_at, "observed_timestamp": _timestamp(observed_at), "effective_at": raw.get("effective_at", raw.get("effective_from")), "confidence": raw.get("confidence"), "raw_status": raw.get("status", raw.get("state")), "evidence_kind": evidence_kind, "evidence_kinds": [evidence_kind], "high_impact": bool(raw.get("high_impact", raw.get("impact") == "high"))}
+        # Source is provenance, not identity: syndicated copies should collapse
+        # into one observation while retaining every contributing source.
+        evidence_id = hashlib.sha256(json.dumps({k: evidence[k] for k in ("evidence_url", "observed_at", "raw_status")}, sort_keys=True, default=str).encode()).hexdigest()[:16]
         evidence["observation_id"] = evidence_id
         pid = candidate_ids[0]
         normalized.setdefault(pid, {"player_id": pid, "state": state, "observations": [], "provenance": []})
@@ -121,14 +160,13 @@ def validate_risk(players: dict[str, Any], observations: list[dict[str, Any]] | 
         if existing is not None:
             existing["sources"] = sorted(set(existing.get("sources", []) + [source]))
             existing["evidence_urls"] = sorted(set(existing.get("evidence_urls", []) + evidence["evidence_urls"]))
+            existing["evidence_kinds"] = sorted(set(existing.get("evidence_kinds", [existing.get("evidence_kind", "status")]) + [evidence_kind]))
             item["provenance"] = sorted(set(item["provenance"] + [source]))
         else:
             item["observations"].append(evidence)
             item["provenance"].append(source)
             if item["state"] == "unknown" or state in {"suspended", "unavailable", "under_review"}:
                 item["state"] = state
-        if name_only:
-            review.append({"observation_index": index, "source": source, "reason": "name_only", "player_id": pid})
     for pid in players:
         normalized.setdefault(str(pid), {"player_id": str(pid), "state": "unknown", "observations": [], "provenance": []})
     for item in normalized.values():
@@ -150,16 +188,16 @@ def _add_review_queue(players: dict[str, dict[str, Any]], review: list[dict[str,
         if len(states - {"unknown"}) > 1:
             review.append({"player_id": player["player_id"], "reason": "conflicting_evidence", "candidate_states": sorted(states)})
         for observation in observations:
-            kind = observation.get("evidence_kind")
-            if kind in {"allegation", "rumor", "report", "fine"}:
+            kinds = set(observation.get("evidence_kinds", [observation.get("evidence_kind")]))
+            if kinds & WEAK_EVIDENCE_KINDS:
                 review.append({"player_id": player["player_id"], "reason": "weak_or_disciplinary_evidence", "observation_id": observation["observation_id"]})
             if observation.get("high_impact"):
                 review.append({"player_id": player["player_id"], "reason": "high_impact", "observation_id": observation["observation_id"]})
-            try:
-                if now - float(observation["observed_at"]) > 30 * 86400:
-                    review.append({"player_id": player["player_id"], "reason": "stale", "observation_id": observation["observation_id"]})
-            except (TypeError, ValueError):
-                pass
+            observed = observation.get("observed_timestamp")
+            if observed is not None and now - observed > 30 * 86400:
+                observation["stale"] = True
+                player["state"] = "stale"
+                review.append({"player_id": player["player_id"], "reason": "stale", "observation_id": observation["observation_id"]})
         if player["state"] in NEUTRAL_STATES:
             player.setdefault("review_reasons", []).append("unknown_or_stale")
     # de-duplicate queue entries while retaining order

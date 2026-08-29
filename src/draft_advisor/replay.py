@@ -10,7 +10,7 @@ from .recommend import calculate
 from .schedule import league_rules_identity, validate_schedule_snapshot
 from .trade import evaluate
 from .values import validate_value_snapshot
-from .risk import validate_authoritative_risk_snapshot
+from .risk import risk_injury_status, validate_authoritative_risk_snapshot
 
 
 class ReplayFailure(ValueError):
@@ -117,8 +117,11 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
                 risk_state = item.get("state", "unknown")
                 player["risk_state"] = risk_state
                 player["risk_evidence"] = item.get("observations", [])
-                if risk_state in {"unavailable", "suspended", "limited", "under_review"}:
-                    player["injury_status"] = {"unavailable": "OUT", "suspended": "OUT", "limited": "QUESTIONABLE", "under_review": "QUESTIONABLE"}[risk_state]
+                injury_status = risk_injury_status(risk_state)
+                if injury_status:
+                    player["injury_status"] = injury_status
+                player["risk_freshness"] = risk.get("freshness", {})
+                player["risk_provenance"] = item.get("provenance", [])
     raw_schedule = bundle.get("schedule_snapshot")
     if raw_schedule is None and "schedule" in bundle:
         raw_schedule = bundle["schedule"]

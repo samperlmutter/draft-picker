@@ -16,7 +16,7 @@ from .schedule import (
 from .sleeper import SleeperClient
 from .storage import Storage
 from .values import build_value_snapshot, validate_value_snapshot
-from .risk import validate_authoritative_risk_snapshot, validate_risk, RISK_PARSER, RISK_PARSER_VERSION, RISK_SCHEMA_VERSION, read_risk_source
+from .risk import build_risk_snapshot, risk_injury_status, validate_authoritative_risk_snapshot, validate_risk
 
 
 def validate_risk_fixture(storage: Storage, players: dict[str, Any], clock: Callable[[], float] = time.time) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -39,17 +39,9 @@ def refresh_risk(storage: Storage, players: dict[str, Any], clock: Callable[[], 
         raise ValueError("risk validation artifact is not a validation snapshot")
     if (validation.get("data_quality") or {}).get("status") != "pass":
         raise ValueError("risk validation failed quality gates")
-    # Promote the recorded validation result.  Do not reread the source here:
-    # the two-run workflow must be deterministic even if the fixture changes.
-    now = clock()
-    _, source = read_risk_source()
-    snapshot = validate_authoritative_risk_snapshot({
-        "schema_version": RISK_SCHEMA_VERSION, "phase": "authoritative", "authoritative": True,
-        "generated_at": validation.get("generated_at", now), "refreshed_at": now,
-        "freshness": {"observed_at": now, "max_age_seconds": 1800}, "source": source,
-        "parser": {"name": RISK_PARSER, "version": RISK_PARSER_VERSION},
-        "players": validation["players"], "data_quality": validation["data_quality"],
-    })
+    # Re-read and derive the source during publication; validation is only a
+    # non-authoritative gate and is never promoted into current truth.
+    snapshot = validate_authoritative_risk_snapshot(build_risk_snapshot(players, clock=clock))
     with storage.publication_lock():
         storage.write_json(storage.risk_path, snapshot)
     return snapshot
@@ -209,8 +201,9 @@ def recalculate(
                 state = item.get("state", "unknown")
                 player["risk_state"] = state
                 player["risk_evidence"] = item.get("observations", [])
-                if state in {"unavailable", "suspended", "limited", "under_review"}:
-                    player["injury_status"] = {"unavailable": "OUT", "suspended": "OUT", "limited": "QUESTIONABLE", "under_review": "QUESTIONABLE"}[state]
+                injury_status = risk_injury_status(state)
+                if injury_status:
+                    player["injury_status"] = injury_status
     if schedule is None:
         try:
             schedule = read_schedule(storage)

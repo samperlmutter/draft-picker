@@ -5,6 +5,8 @@ import time
 from collections import Counter
 from typing import Any, Callable
 
+from .risk import risk_is_visible
+
 
 FLEX_POSITIONS = {"RB", "WR", "TE"}
 BENCH = {"BN", "BENCH", "IR", "TAXI"}
@@ -455,7 +457,7 @@ def calculate(
             "draft_score": round(score, 3), "score_type": "relative comparison", "components": components,
             "roster_fit": fit_text, "injury_status": injury or None,
             "risk_state": risk_state,
-            "risk_visible": risk_state in {"unknown", "stale", "under_review"},
+            "risk_visible": risk_is_visible(risk_state),
             "injury_warning": f"{injury} designation materially reduces this score" if injury in {"OUT", "IR", "PUP"} else None,
             "scarcity": round(scarcity, 3), "expected_survival_to_next_turn": round(expected_survival, 3),
             "relevant_opponent_needs": {position: need_count} if need_count else {},
