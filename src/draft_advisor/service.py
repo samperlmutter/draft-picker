@@ -16,6 +16,16 @@ from .schedule import (
 from .sleeper import SleeperClient
 from .storage import Storage
 from .values import build_value_snapshot, validate_value_snapshot
+from .risk import validate_risk
+
+
+def validate_risk_fixture(storage: Storage, players: dict[str, Any], clock: Callable[[], float] = time.time) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run fixture-backed risk validation and publish only non-authoritative artifacts."""
+    snapshot, report = validate_risk(players, clock=clock)
+    with storage.publication_lock():
+        storage.write_json(storage.risk_validation_path, snapshot)
+        storage.write_json(storage.risk_validation_report_path, report)
+    return snapshot, report
 
 
 def read_values(storage: Storage) -> dict[str, Any]:
