@@ -28,6 +28,7 @@ def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         key: candidate[key] for key in (
             "player_id", "name", "position", "draft_score", "model_judgment_eligible",
             "injury_warning", "expected_survival_to_next_turn", "position_run_survival_penalty",
+            "risk_state", "risk_visible",
         )
     } | {
         "schedule_data_quality": candidate.get("schedule_data_quality", "unavailable"),
@@ -113,11 +114,11 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
                 player = snapshot["players"].get(str(pid))
                 if player is None:
                     continue
-                state = item.get("state", "unknown")
-                player["risk_state"] = state
+                risk_state = item.get("state", "unknown")
+                player["risk_state"] = risk_state
                 player["risk_evidence"] = item.get("observations", [])
-                if state in {"unavailable", "suspended", "limited", "under_review"}:
-                    player["injury_status"] = {"unavailable": "OUT", "suspended": "OUT", "limited": "QUESTIONABLE", "under_review": "QUESTIONABLE"}[state]
+                if risk_state in {"unavailable", "suspended", "limited", "under_review"}:
+                    player["injury_status"] = {"unavailable": "OUT", "suspended": "OUT", "limited": "QUESTIONABLE", "under_review": "QUESTIONABLE"}[risk_state]
     raw_schedule = bundle.get("schedule_snapshot")
     if raw_schedule is None and "schedule" in bundle:
         raw_schedule = bundle["schedule"]
