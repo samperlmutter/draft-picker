@@ -35,15 +35,18 @@ FantasyCalc redraft values are the primary quality signal; Fantasy Football
 Calculator ADP is used only to estimate the cost of waiting. Complete external
 snapshots and recommendations are atomically activated in the runtime directory.
 
-Schedule preparation is an independent optional cache. A schedule provider can
-be supplied through a client `schedule(season)` method, recorded fixtures can
-use `schedule__<season>.json` (or `schedule.json`) under
-`DRAFT_ADVISOR_FIXTURES`, and a configured JSON URL can use
-`schedule_source_url` in the config (with `{season}` as an optional placeholder).
-The provider payload supplies games and position-specific opponent matchup
-ratings; the application does not assume Sleeper exposes either one. Prepared
-data is stored as `schedule-snapshot.json` and is reused until its freshness
-window, League Rules identity, or relevant player team/position inputs change.
+Schedule preparation is an independent cache. By default it downloads the
+season schedule and the previous completed season's weekly player stats from
+the public nflverse releases, then calculates position-specific opponent
+matchup ratings locally. A schedule provider can also be supplied through a
+client `schedule(season)` method, recorded fixtures can use
+`schedule__<season>.json` (or `schedule.json`) under `DRAFT_ADVISOR_FIXTURES`,
+and a configured JSON URL can use `schedule_source_url` in the config (with
+`{season}` as an optional placeholder). The provider payload supplies games and
+position-specific opponent matchup ratings; the application does not assume
+Sleeper exposes either one. Prepared data is stored as `schedule-snapshot.json`
+and is reused until its freshness window, League Rules identity, or relevant
+player team/position inputs change.
 Incomplete or failed refreshes leave the previous valid snapshot intact and
 fall back to neutral schedule evidence when no valid snapshot is available.
 

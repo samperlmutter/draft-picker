@@ -350,7 +350,10 @@ def fetch_schedule_payload(config: Any, season: int, client: Any = None) -> tupl
 
     configured_url = getattr(config, "schedule_source_url", None) or os.environ.get("DRAFT_ADVISOR_SCHEDULE_URL")
     if not configured_url:
-        raise ScheduleUnavailable("no schedule source is configured")
+        from .nflverse import NflverseScheduleProvider
+
+        provider = NflverseScheduleProvider()
+        return provider.schedule(season), provider.schedule_url
     url = configured_url.format(season=season)
     request = urllib.request.Request(url, headers={"User-Agent": "draft-advisor/0.1"})
     try:
