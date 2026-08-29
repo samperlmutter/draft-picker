@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 RISK_SCHEMA_VERSION = 1
+RISK_PARSER = "draft-advisor-risk"
+RISK_PARSER_VERSION = "1"
 KNOWN_STATES = {"available", "limited", "unavailable", "suspended", "exempt", "under_review", "unknown", "stale"}
 
 
@@ -42,6 +44,11 @@ def _source_payload() -> list[dict[str, Any]]:
             item.setdefault("source", path.stem)
             rows.append(item)
     return rows
+
+
+def read_risk_source() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read the recorded source once, retaining parser/source provenance."""
+    return _source_payload(), {"kind": "fixture", "parser": RISK_PARSER, "parser_version": RISK_PARSER_VERSION}
 
 
 def _state(value: Any) -> str:
@@ -127,4 +134,35 @@ def validate_risk_snapshot(snapshot: Any) -> dict[str, Any]:
         raise ValueError("risk validation snapshot must be schema-version 1 and non-authoritative")
     if not isinstance(snapshot.get("players"), dict) or not isinstance(snapshot.get("data_quality"), dict):
         raise ValueError("risk validation snapshot is incomplete")
+    return snapshot
+
+
+def build_risk_snapshot(players: dict[str, Any], *, clock: Callable[[], float] = time.time) -> dict[str, Any]:
+    observations, source = read_risk_source()
+    validated, report = validate_risk(players, observations, clock=clock)
+    if report["status"] != "pass":
+        raise ValueError("risk refresh failed quality gates; preserving the last valid snapshot")
+    now = clock()
+    return {
+        "schema_version": RISK_SCHEMA_VERSION,
+        "phase": "authoritative",
+        "authoritative": True,
+        "generated_at": validated["generated_at"],
+        "refreshed_at": now,
+        "freshness": {"observed_at": now, "max_age_seconds": 1800},
+        "source": source,
+        "parser": {"name": RISK_PARSER, "version": RISK_PARSER_VERSION},
+        "players": validated["players"],
+        "data_quality": report,
+    }
+
+
+def validate_authoritative_risk_snapshot(snapshot: Any) -> dict[str, Any]:
+    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != RISK_SCHEMA_VERSION or snapshot.get("authoritative") is not True or snapshot.get("phase") != "authoritative":
+        raise ValueError("risk snapshot is not authoritative")
+    for key in ("generated_at", "refreshed_at", "freshness", "source", "parser", "players", "data_quality"):
+        if key not in snapshot:
+            raise ValueError(f"risk snapshot is missing {key}")
+    if snapshot["data_quality"].get("status") != "pass":
+        raise ValueError("risk snapshot failed quality gates")
     return snapshot

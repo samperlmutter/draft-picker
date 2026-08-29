@@ -16,7 +16,7 @@ from .schedule import (
 from .sleeper import SleeperClient
 from .storage import Storage
 from .values import build_value_snapshot, validate_value_snapshot
-from .risk import validate_risk
+from .risk import build_risk_snapshot, validate_authoritative_risk_snapshot, validate_risk
 
 
 def validate_risk_fixture(storage: Storage, players: dict[str, Any], clock: Callable[[], float] = time.time) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -26,6 +26,20 @@ def validate_risk_fixture(storage: Storage, players: dict[str, Any], clock: Call
         storage.write_json(storage.risk_validation_path, snapshot)
         storage.write_json(storage.risk_validation_report_path, report)
     return snapshot, report
+
+
+def refresh_risk(storage: Storage, players: dict[str, Any], clock: Callable[[], float] = time.time) -> dict[str, Any]:
+    snapshot = validate_authoritative_risk_snapshot(build_risk_snapshot(players, clock=clock))
+    with storage.publication_lock():
+        storage.write_json(storage.risk_path, snapshot)
+    return snapshot
+
+
+def read_risk(storage: Storage) -> dict[str, Any] | None:
+    try:
+        return validate_authoritative_risk_snapshot(storage.read_json(storage.risk_path, "no risk snapshot is available"))
+    except ValueError:
+        return None
 
 
 def read_values(storage: Storage) -> dict[str, Any]:
@@ -165,6 +179,14 @@ def recalculate(
 ) -> dict[str, Any]:
     current_state = state or storage.read_state()
     current_snapshot = snapshot or read_values(storage)
+    risk = read_risk(storage)
+    if risk is not None:
+        current_snapshot = dict(current_snapshot)
+        current_snapshot["players"] = {pid: dict(player) for pid, player in current_snapshot["players"].items()}
+        for pid, item in risk["players"].items():
+            player = current_snapshot["players"].get(pid)
+            if player is not None and item.get("state") in {"unavailable", "suspended", "limited", "under_review"}:
+                player["injury_status"] = {"unavailable": "OUT", "suspended": "OUT", "limited": "QUESTIONABLE", "under_review": "QUESTIONABLE"}[item["state"]]
     if schedule is None:
         try:
             schedule = read_schedule(storage)

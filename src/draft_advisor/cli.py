@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import load_config
 from .monitor import monitor_pid, refresh, run, start, stop
-from .service import ensure_values, read_recommendation, recalculate, validate_risk_fixture
+from .service import ensure_values, read_recommendation, recalculate, refresh_risk, validate_risk_fixture
 from .sleeper import SleeperClient
 from .storage import Storage
 from .trade import evaluate
@@ -35,6 +35,8 @@ def _parser() -> argparse.ArgumentParser:
     risk_sub = risk.add_subparsers(dest="risk_command", required=True)
     risk_validate = risk_sub.add_parser("validate", help="validate fixture-backed risk observations")
     risk_validate.add_argument("--json", action="store_true", dest="json_output")
+    risk_refresh = risk_sub.add_parser("refresh", help="refresh and publish authoritative fixture-backed risk")
+    risk_refresh.add_argument("--json", action="store_true", dest="json_output")
     monitor = sub.add_parser("monitor", help="manage the local monitor")
     monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
     for name in ("start", "stop", "run"):
@@ -120,6 +122,12 @@ def main(argv: list[str] | None = None) -> int:
             snapshot, report = validate_risk_fixture(storage, SleeperClient().players())
             print(json.dumps({"snapshot": snapshot, "report": report}, sort_keys=True) if args.json_output else f"Risk validation {report['status']}: {report['player_count']} players, {report['observation_count']} observations, {report['matched_count']} matched, {report['unmatched_count']} unmatched, {report['ambiguous_count']} ambiguous; review {report['review_count']}.\nSnapshot: {storage.risk_validation_path}\nReport: {storage.risk_validation_report_path}")
             return 0 if report["status"] == "pass" else 1
+        if args.command == "risk" and args.risk_command == "refresh":
+            storage = Storage.from_environment()
+            snapshot = refresh_risk(storage, SleeperClient().players())
+            result = {"refreshed": True, "phase": snapshot["phase"], "authoritative": snapshot["authoritative"], "player_count": len(snapshot["players"]), "refreshed_at": snapshot["refreshed_at"]}
+            print(json.dumps(result, sort_keys=True) if args.json_output else f"Risk refreshed for {result['player_count']} players. Snapshot: {storage.risk_path}")
+            return 0
         config = load_config(args.config)
         storage = Storage.from_environment()
         if args.command == "status":

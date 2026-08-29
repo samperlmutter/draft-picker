@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from src.draft_advisor.risk import validate_risk
+from src.draft_advisor.risk import build_risk_snapshot, validate_authoritative_risk_snapshot
 
 
 def test_risk_validation_prefers_ids_normalizes_and_deduplicates_with_provenance():
@@ -23,3 +24,13 @@ def test_risk_validation_keeps_unknown_players_without_penalty():
     snapshot, report = validate_risk({"p1": {"full_name": "No Report"}}, [], clock=lambda: 1.0)
     assert snapshot["players"]["p1"]["state"] == "unknown"
     assert report["matched_count"] == 0
+
+
+def test_risk_refresh_builds_authoritative_snapshot_from_fixture(monkeypatch, tmp_path):
+    fixture = tmp_path / "risk-observations.json"
+    fixture.write_text(json.dumps({"observations": [{"player_id": "p1", "status": "OUT", "observed_at": "2026-08-29T10:00:00Z"}]}))
+    monkeypatch.setenv("DRAFT_ADVISOR_FIXTURES", str(tmp_path))
+    snapshot = build_risk_snapshot({"p1": {"full_name": "A"}}, clock=lambda: 42.0)
+    assert validate_authoritative_risk_snapshot(snapshot)["phase"] == "authoritative"
+    assert snapshot["players"]["p1"]["state"] == "unavailable"
+    assert snapshot["parser"]["name"] == "draft-advisor-risk"
