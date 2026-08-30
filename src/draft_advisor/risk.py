@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .sleeper import SleeperClient
+
 RISK_SCHEMA_VERSION = 1
 RISK_PARSER = "draft-advisor-risk"
 RISK_PARSER_VERSION = "1"
@@ -79,9 +81,45 @@ def _source_payload() -> list[dict[str, Any]]:
     return rows
 
 
-def read_risk_source() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Read the recorded source once, retaining parser/source provenance."""
-    return _source_payload(), {"kind": "fixture", "parser": RISK_PARSER, "parser_version": RISK_PARSER_VERSION}
+def _sleeper_payload(client: SleeperClient) -> list[dict[str, Any]]:
+    """Convert one Sleeper player response into the risk observation format."""
+    players = client.players()
+    if not isinstance(players, dict) or not players:
+        raise ValueError("Sleeper players response is unavailable or empty")
+
+    observed_at = time.time()
+    observations: list[dict[str, Any]] = []
+    for player_id, player in players.items():
+        if not isinstance(player, dict):
+            raise ValueError("Sleeper players response contains a malformed player")
+        # Sleeper's injury designation is more specific than its general status.
+        raw_status = player.get("injury_status") or player.get("status")
+        if raw_status in (None, ""):
+            continue
+        observations.append({
+            "player_id": str(player_id),
+            "status": raw_status,
+            "observed_at": observed_at,
+            "source": "sleeper",
+            "source_tier": "sleeper",
+            "confidence": 1.0,
+            "evidence_kind": "status",
+            "evidence_url": "https://api.sleeper.app/v1/players/nfl",
+        })
+    return observations
+
+
+def read_risk_source(client: SleeperClient | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read fixtures when configured, otherwise read the live Sleeper source once."""
+    if os.environ.get("DRAFT_ADVISOR_FIXTURES"):
+        return _source_payload(), {"kind": "fixture", "parser": RISK_PARSER, "parser_version": RISK_PARSER_VERSION}
+    observations = _sleeper_payload(client or SleeperClient())
+    return observations, {
+        "kind": "sleeper",
+        "endpoint": "/players/nfl",
+        "parser": RISK_PARSER,
+        "parser_version": RISK_PARSER_VERSION,
+    }
 
 
 def _state(value: Any) -> str:

@@ -57,6 +57,9 @@ to publish a non-authoritative diagnostic snapshot, inspect unresolved items wit
 `draft-advisor risk refresh` to publish the authoritative snapshot. Invalid,
 empty, stale, ambiguous, or weak evidence cannot replace valid risk data; when
 no authoritative snapshot is available, recommendations apply no risk penalty.
+With no `DRAFT_ADVISOR_FIXTURES` override, validation and refresh read Sleeper's
+current `/players/nfl` response and normalize each player's injury designation
+or general status. Fixtures remain available for deterministic tests.
 
 The repository skill at `.agents/skills/draft-advisor/SKILL.md` provides the thin
 Codex adapter for natural preparation, recommendation, and confirmed-trade
