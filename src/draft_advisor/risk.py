@@ -17,6 +17,10 @@ NEUTRAL_STATES = {"unknown", "stale", "under_review"}
 DISCIPLINE_STATES = {"suspended", "exempt"}
 PENALTY_STATES = {"unavailable", "suspended", "exempt"}
 WEAK_EVIDENCE_KINDS = {"allegation", "rumor", "report", "fine", "investigation", "under_review"}
+OVERRIDABLE_REVIEW_REASONS = {
+    "conflicting_evidence", "weak_or_disciplinary_evidence", "high_impact",
+    "stale", "unknown_status",
+}
 
 
 def risk_injury_status(state: Any) -> str | None:
@@ -104,7 +108,42 @@ def _identity_index(players: dict[str, Any]) -> tuple[dict[str, list[str]], dict
         name = player.get("full_name") or " ".join(filter(None, (player.get("first_name"), player.get("last_name"))))
         if name:
             names.setdefault(_norm(name), []).append(pid)
-    return stable, names
+    return ({key: list(dict.fromkeys(value)) for key, value in stable.items()},
+            {key: list(dict.fromkeys(value)) for key, value in names.items()})
+
+
+def _known_status(value: Any) -> bool:
+    return _norm(value) in {
+        "active", "available", "healthy", "questionable", "limited", "doubtful",
+        "out", "inactive", "injuredreserve", "unavailable", "suspended", "suspension",
+        "exempt", "commissionerexempt", "investigation", "underreview", "review", "unknown",
+    }
+
+
+def _event_time(observation: dict[str, Any]) -> float:
+    effective = _timestamp(observation.get("effective_at"))
+    observed = observation.get("observed_timestamp")
+    return max(value for value in (effective, observed) if value is not None) if effective is not None or observed is not None else float("-inf")
+
+
+def _current_state(observations: list[dict[str, Any]]) -> str:
+    if not observations:
+        return "unknown"
+    latest = max(observations, key=lambda item: (_event_time(item), item.get("_sequence", -1)))
+    return latest.get("normalized_state", _state(latest.get("raw_status")))
+
+
+def _weekly_availability(observations: list[dict[str, Any]]) -> dict[str, str]:
+    """Return the latest normalized state for each explicitly reported week."""
+    result: dict[str, str] = {}
+    for observation in sorted(observations, key=lambda item: (_event_time(item), item.get("_sequence", -1))):
+        weeks = observation.get("weeks") or observation.get("week")
+        if not isinstance(weeks, list):
+            weeks = [weeks]
+        for week in weeks:
+            if week not in (None, ""):
+                result[str(week)] = observation.get("normalized_state", "unknown")
+    return dict(sorted(result.items()))
 
 
 def validate_risk(players: dict[str, Any], observations: list[dict[str, Any]] | None = None, clock: Callable[[], float] = time.time) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -113,24 +152,30 @@ def validate_risk(players: dict[str, Any], observations: list[dict[str, Any]] | 
     normalized: dict[str, dict[str, Any]] = {}
     review: list[dict[str, Any]] = []
     malformed = 0
+    unknown_status = 0
     unmatched = 0
     ambiguous = 0
     for index, raw in enumerate(observations):
+        if not isinstance(raw, dict):
+            malformed += 1
+            review.append({"observation_index": index, "reason": "malformed_observation"})
+            continue
         source = str(raw.get("source") or "unknown")
-        name_only = not any(raw.get(field) is not None for field in ("player_id", "sleeper_id", "gsis_id", "nfl_id"))
+        identifier_fields = ("player_id", "sleeper_id", "gsis_id", "nfl_id")
+        supplied_ids = [raw[field] for field in identifier_fields if raw.get(field) not in (None, "")]
+        name_only = not supplied_ids
         candidate_ids: list[str] = []
-        for field in ("player_id", "sleeper_id", "gsis_id", "nfl_id"):
-            if raw.get(field) is not None:
-                candidate_ids = stable.get(_norm(raw[field]), [])
-                if candidate_ids:
-                    break
-        if not candidate_ids and raw.get("name"):
+        for identifier in supplied_ids:
+            candidate_ids.extend(stable.get(_norm(identifier), []))
+        candidate_ids = list(dict.fromkeys(candidate_ids))
+        if not candidate_ids and name_only and raw.get("name"):
             candidate_ids = names.get(_norm(raw["name"]), [])
+        if len(candidate_ids) > 1:
+            ambiguous += 1
+            review.append({"observation_index": index, "source": source, "reason": "conflicting_identity" if supplied_ids else "ambiguous", "name": raw.get("name"), "candidate_player_ids": sorted(candidate_ids)})
+            continue
         if name_only:
-            if len(candidate_ids) > 1:
-                ambiguous += 1
-            else:
-                unmatched += 1
+            unmatched += 1
             review.append({"observation_index": index, "source": source, "reason": "name_only", "name": raw.get("name"), "candidate_player_ids": sorted(candidate_ids)})
             continue
         if len(candidate_ids) != 1:
@@ -139,16 +184,25 @@ def validate_risk(players: dict[str, Any], observations: list[dict[str, Any]] | 
             else: unmatched += 1
             review.append({"observation_index": index, "source": source, "reason": reason, "name": raw.get("name"), "candidate_player_ids": sorted(candidate_ids)})
             continue
-        observed_at = raw.get("observed_at") or raw.get("timestamp") or raw.get("published_at")
-        if not observed_at:
+        observed_at = next((raw[field] for field in ("observed_at", "timestamp", "published_at") if raw.get(field) not in (None, "")), None)
+        observed_timestamp = _timestamp(observed_at)
+        if observed_at is None:
             malformed += 1
             review.append({"observation_index": index, "source": source, "reason": "missing_timestamp"})
             continue
-        state = _state(raw.get("state", raw.get("status")))
+        if observed_timestamp is None:
+            malformed += 1
+            review.append({"observation_index": index, "source": source, "reason": "invalid_timestamp", "observed_at": observed_at})
+            continue
+        raw_status = raw.get("state", raw.get("status"))
+        state = _state(raw_status)
+        if not _known_status(raw_status):
+            unknown_status += 1
+            review.append({"observation_index": index, "source": source, "reason": "unknown_status", "raw_status": raw_status})
         evidence_kind = str(raw.get("evidence_kind", raw.get("kind", "status"))).lower()
         if evidence_kind in WEAK_EVIDENCE_KINDS:
             state = "unknown"
-        evidence = {"source": source, "sources": [source], "source_tier": raw.get("source_tier", raw.get("tier")), "evidence_url": raw.get("evidence_url", raw.get("url")), "evidence_urls": [raw.get("evidence_url", raw.get("url"))] if raw.get("evidence_url", raw.get("url")) else [], "observed_at": observed_at, "observed_timestamp": _timestamp(observed_at), "effective_at": raw.get("effective_at", raw.get("effective_from")), "confidence": raw.get("confidence"), "raw_status": raw.get("status", raw.get("state")), "evidence_kind": evidence_kind, "evidence_kinds": [evidence_kind], "high_impact": bool(raw.get("high_impact", raw.get("impact") == "high"))}
+        evidence = {"source": source, "sources": [source], "source_tier": raw.get("source_tier", raw.get("tier")), "evidence_url": raw.get("evidence_url", raw.get("url")), "evidence_urls": [raw.get("evidence_url", raw.get("url"))] if raw.get("evidence_url", raw.get("url")) else [], "observed_at": observed_at, "observed_timestamp": observed_timestamp, "effective_at": raw.get("effective_at", raw.get("effective_from")), "confidence": raw.get("confidence"), "raw_status": raw_status, "normalized_state": state, "week": raw.get("week"), "weeks": raw.get("weeks"), "evidence_kind": evidence_kind, "evidence_kinds": [evidence_kind], "high_impact": bool(raw.get("high_impact", raw.get("impact") == "high")), "_sequence": index}
         # Source is provenance, not identity: syndicated copies should collapse
         # into one observation while retaining every contributing source.
         evidence_id = hashlib.sha256(json.dumps({k: evidence[k] for k in ("evidence_url", "observed_at", "raw_status")}, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -165,14 +219,14 @@ def validate_risk(players: dict[str, Any], observations: list[dict[str, Any]] | 
         else:
             item["observations"].append(evidence)
             item["provenance"].append(source)
-            if item["state"] == "unknown" or state in {"suspended", "unavailable", "under_review"}:
-                item["state"] = state
+        item["state"] = _current_state(item["observations"])
+        item["weekly_availability"] = _weekly_availability(item["observations"])
     for pid in players:
-        normalized.setdefault(str(pid), {"player_id": str(pid), "state": "unknown", "observations": [], "provenance": []})
+        normalized.setdefault(str(pid), {"player_id": str(pid), "state": "unknown", "observations": [], "provenance": [], "weekly_availability": {}})
     for item in normalized.values():
         item["provenance"] = sorted(set(item["provenance"]))
         item["observations"].sort(key=lambda x: x["observation_id"])
-    report = {"schema_version": RISK_SCHEMA_VERSION, "status": "pass" if not (malformed or review) else "review", "player_count": len(players), "observation_count": len(observations), "matched_count": sum(bool(x["observations"]) for x in normalized.values()), "unmatched_count": unmatched, "ambiguous_count": ambiguous, "malformed_count": malformed, "review_count": len(review), "review": review}
+    report = {"schema_version": RISK_SCHEMA_VERSION, "status": "pass" if not (malformed or review) else "review", "player_count": len(players), "observation_count": len(observations), "matched_count": sum(bool(x["observations"]) for x in normalized.values()), "unmatched_count": unmatched, "ambiguous_count": ambiguous, "malformed_count": malformed, "unknown_status_count": unknown_status, "review_count": len(review), "review": review}
     _add_review_queue(normalized, review, clock())
     report["review_count"] = len(review)
     report["status"] = "pass" if not (malformed or review) else "review"
@@ -184,9 +238,20 @@ def _add_review_queue(players: dict[str, dict[str, Any]], review: list[dict[str,
     """Attach a human queue; uncertain evidence is never converted to discipline."""
     for player in players.values():
         observations = player["observations"]
-        states = { _state(o.get("raw_status")) for o in observations }
-        if len(states - {"unknown"}) > 1:
-            review.append({"player_id": player["player_id"], "reason": "conflicting_evidence", "candidate_states": sorted(states)})
+        resolved = [
+            observation for observation in observations
+            if _state(observation.get("raw_status")) != "unknown"
+        ]
+        states = {_state(o.get("raw_status")) for o in resolved}
+        if len(states) > 1:
+            latest_time = max(_event_time(observation) for observation in resolved)
+            latest_states = {
+                _state(observation.get("raw_status"))
+                for observation in resolved
+                if _event_time(observation) == latest_time
+            }
+            if len(latest_states) > 1:
+                review.append({"player_id": player["player_id"], "reason": "conflicting_evidence", "candidate_states": sorted(states)})
         for observation in observations:
             kinds = set(observation.get("evidence_kinds", [observation.get("evidence_kind")]))
             if kinds & WEAK_EVIDENCE_KINDS:
@@ -196,8 +261,10 @@ def _add_review_queue(players: dict[str, dict[str, Any]], review: list[dict[str,
             observed = observation.get("observed_timestamp")
             if observed is not None and now - observed > 30 * 86400:
                 observation["stale"] = True
-                player["state"] = "stale"
                 review.append({"player_id": player["player_id"], "reason": "stale", "observation_id": observation["observation_id"]})
+        fresh = [observation for observation in observations if not observation.get("stale")]
+        player["state"] = _current_state(fresh) if fresh else ("stale" if observations else player["state"])
+        player["weekly_availability"] = _weekly_availability(fresh)
         if player["state"] in NEUTRAL_STATES:
             player.setdefault("review_reasons", []).append("unknown_or_stale")
     # de-duplicate queue entries while retaining order
@@ -236,6 +303,22 @@ def apply_risk_overrides(snapshot: dict[str, Any], overrides: list[dict[str, Any
         entry = dict(override, state=state, applied_at=now)
         result["players"][pid]["state"] = state
         audit.append(entry)
+    quality = result.get("data_quality")
+    if isinstance(quality, dict) and isinstance(quality.get("review"), list):
+        active_players = {
+            str(entry.get("player_id"))
+            for entry in audit
+            if float(entry.get("expires_at", 0)) > now
+        }
+        quality["review"] = [
+            item for item in quality["review"]
+            if not (
+                item.get("reason") in OVERRIDABLE_REVIEW_REASONS
+                and str(item.get("player_id", "")) in active_players
+            )
+        ]
+        quality["review_count"] = len(quality["review"])
+        quality["status"] = "pass" if not quality["review"] and not quality.get("malformed_count") else "review"
     result["authoritative"] = False
     return result
 
@@ -248,9 +331,19 @@ def validate_risk_snapshot(snapshot: Any) -> dict[str, Any]:
     return snapshot
 
 
-def build_risk_snapshot(players: dict[str, Any], *, clock: Callable[[], float] = time.time) -> dict[str, Any]:
+def build_risk_snapshot(
+    players: dict[str, Any],
+    *,
+    clock: Callable[[], float] = time.time,
+    overrides: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     observations, source = read_risk_source()
+    if not observations:
+        raise ValueError("risk source is unavailable or empty; preserving the last valid snapshot")
     validated, report = validate_risk(players, observations, clock=clock)
+    if overrides:
+        validated = apply_risk_overrides(validated, overrides, now=clock())
+        report = validated["data_quality"]
     if report["status"] != "pass":
         raise ValueError("risk refresh failed quality gates; preserving the last valid snapshot")
     now = clock()
@@ -265,6 +358,7 @@ def build_risk_snapshot(players: dict[str, Any], *, clock: Callable[[], float] =
         "parser": {"name": RISK_PARSER, "version": RISK_PARSER_VERSION},
         "players": validated["players"],
         "data_quality": report,
+        "overrides": validated.get("overrides", []),
     }
 
 

@@ -179,7 +179,12 @@ class ReplayTests(unittest.TestCase):
 
     def test_replay_summary_preserves_risk_metadata(self) -> None:
         bundle = build_bundle()
-        risk_snapshot = build_risk_snapshot(bundle["value_snapshots"][0]["players"], clock=lambda: 17.0)
+        source = (
+            [{"player_id": "p1", "status": "active", "observed_at": 1}],
+            {"kind": "fixture", "parser": "draft-advisor-risk", "parser_version": "1"},
+        )
+        with patch("src.draft_advisor.risk.read_risk_source", return_value=source):
+            risk_snapshot = build_risk_snapshot(bundle["value_snapshots"][0]["players"], clock=lambda: 17.0)
         bundle["risk_snapshot"] = risk_snapshot
 
         result = replay(bundle)

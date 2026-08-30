@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from typing import Any, Callable
 
@@ -16,12 +18,42 @@ from .schedule import (
 from .sleeper import SleeperClient
 from .storage import Storage
 from .values import build_value_snapshot, validate_value_snapshot
-from .risk import build_risk_snapshot, risk_injury_status, validate_authoritative_risk_snapshot, validate_risk
+from .risk import (
+    build_risk_snapshot,
+    read_risk_source,
+    risk_injury_status,
+    validate_authoritative_risk_snapshot,
+    validate_risk,
+    validate_risk_snapshot,
+)
+
+
+def _risk_source_binding(players: dict[str, Any]) -> str:
+    """Bind validation to the player universe, while allowing fresh source reads."""
+    payload = {"players": players}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _risk_source_is_healthy(observations: list[dict[str, Any]], report: dict[str, Any]) -> bool:
+    """Require a usable source before allowing it to become draft-day truth."""
+    return bool(observations) and report.get("status") == "pass" and report.get("matched_count", 0) > 0
 
 
 def validate_risk_fixture(storage: Storage, players: dict[str, Any], clock: Callable[[], float] = time.time) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run fixture-backed risk validation and publish only non-authoritative artifacts."""
-    snapshot, report = validate_risk(players, clock=clock)
+    observations, source = read_risk_source()
+    snapshot, report = validate_risk(players, observations, clock=clock)
+    report = dict(report)
+    report["source"] = source
+    if not observations:
+        report["status"] = "unavailable"
+        report["review"] = [{"reason": "source_unavailable"}]
+        report["review_count"] = 1
+    report["source_binding"] = _risk_source_binding(players)
+    snapshot = dict(snapshot)
+    snapshot["source"] = source
+    snapshot["source_binding"] = report["source_binding"]
     with storage.publication_lock():
         storage.write_json(storage.risk_validation_path, snapshot)
         storage.write_json(storage.risk_validation_report_path, report)
@@ -35,22 +67,46 @@ def refresh_risk(storage: Storage, players: dict[str, Any], clock: Callable[[], 
         storage.risk_validation_path,
         "risk validation is required before authoritative refresh",
     )
-    if validation.get("authoritative") is not False or validation.get("phase") != "validation":
-        raise ValueError("risk validation artifact is not a validation snapshot")
+    try:
+        validate_risk_snapshot(validation)
+    except ValueError as exc:
+        raise ValueError("risk validation artifact is not a valid validation snapshot") from exc
     if (validation.get("data_quality") or {}).get("status") != "pass":
         raise ValueError("risk validation failed quality gates")
+    observations, _source = read_risk_source()
+    report = validation["data_quality"]
+    if not _risk_source_is_healthy(observations, report):
+        raise ValueError("risk source is unavailable or incomplete; preserving the last valid snapshot")
+    binding = validation.get("source_binding")
+    if not binding or binding != _risk_source_binding(players):
+        raise ValueError("risk validation does not match the current players and source")
     # Re-read and derive the source during publication; validation is only a
     # non-authoritative gate and is never promoted into current truth.
-    snapshot = validate_authoritative_risk_snapshot(build_risk_snapshot(players, clock=clock))
+    snapshot = validate_authoritative_risk_snapshot(
+        build_risk_snapshot(
+            players,
+            clock=clock,
+            overrides=validation.get("overrides") or [],
+        )
+    )
     with storage.publication_lock():
         storage.write_json(storage.risk_path, snapshot)
     return snapshot
 
 
-def read_risk(storage: Storage) -> dict[str, Any] | None:
+def read_risk(storage: Storage, clock: Callable[[], float] = time.time) -> dict[str, Any] | None:
     try:
-        return validate_authoritative_risk_snapshot(storage.read_json(storage.risk_path, "no risk snapshot is available"))
-    except ValueError:
+        snapshot = validate_authoritative_risk_snapshot(storage.read_json(storage.risk_path, "no risk snapshot is available"))
+        freshness = snapshot.get("freshness") or {}
+        observed_at = float(freshness["observed_at"])
+        max_age = float(freshness["max_age_seconds"])
+        if max_age < 0 or clock() - observed_at > max_age:
+            return None
+        source = snapshot.get("source")
+        if not isinstance(source, dict) or not source.get("kind") or not source.get("parser"):
+            return None
+        return snapshot
+    except (KeyError, TypeError, ValueError):
         return None
 
 

@@ -31,6 +31,9 @@ def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
             "risk_state", "risk_visible",
         )
     } | {
+        "risk_evidence": copy.deepcopy(candidate.get("risk_evidence", [])),
+        "risk_freshness": copy.deepcopy(candidate.get("risk_freshness", {})),
+        "risk_provenance": copy.deepcopy(candidate.get("risk_provenance", [])),
         "schedule_data_quality": candidate.get("schedule_data_quality", "unavailable"),
         "regular_season_matchup": components.get("regular_season_matchup", 0.0),
         "playoff_matchup": components.get("playoff_matchup", 0.0),
@@ -42,7 +45,17 @@ def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _recommendation_summary(recommendation: dict[str, Any], pick_no: int) -> dict[str, Any]:
+def _recommendation_summary(
+    recommendation: dict[str, Any], pick_no: int, snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    # ``calculate`` intentionally returns a compact recommendation. Replay is
+    # the audit boundary, so restore the source metadata here instead of
+    # making the live recommendation contract carry raw evidence.
+    for candidate in [recommendation["calculated_pick"], *recommendation["backup_picks"]]:
+        risk = snapshot.get("players", {}).get(str(candidate.get("player_id")), {})
+        candidate["risk_evidence"] = copy.deepcopy(risk.get("risk_evidence", risk.get("observations", [])))
+        candidate["risk_freshness"] = copy.deepcopy(risk.get("risk_freshness", risk.get("freshness", {})))
+        candidate["risk_provenance"] = copy.deepcopy(risk.get("risk_provenance", risk.get("provenance", [])))
     return {
         "pick_no": pick_no,
         "calculated_pick": _candidate_summary(recommendation["calculated_pick"]),
@@ -109,18 +122,38 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
             risk = validate_authoritative_risk_snapshot(copy.deepcopy(raw_risk))
         except (TypeError, ValueError) as exc:
             raise ReplayFailure("risk", str(exc)) from exc
+        freshness = risk.get("freshness")
+        if not isinstance(freshness, dict) or freshness.get("observed_at") is None:
+            raise ReplayFailure("risk", "risk snapshot freshness metadata is incomplete")
+        try:
+            max_age = float(freshness.get("max_age_seconds"))
+        except (TypeError, ValueError) as exc:
+            raise ReplayFailure("risk", "risk snapshot freshness max age is invalid") from exc
+        if max_age < 0:
+            raise ReplayFailure("risk", "risk snapshot freshness max age cannot be negative")
+        if not isinstance(risk.get("source"), dict) or not isinstance(risk.get("parser"), dict):
+            raise ReplayFailure("risk", "risk snapshot provenance metadata is incomplete")
+        if not isinstance(risk.get("players"), dict):
+            raise ReplayFailure("risk", "risk snapshot players must be an object")
         for snapshot in validated_snapshots:
             for pid, item in risk["players"].items():
                 player = snapshot["players"].get(str(pid))
                 if player is None:
                     continue
+                if not isinstance(item, dict):
+                    raise ReplayFailure("risk", "risk snapshot player entries must be objects", player_id=str(pid))
+                # Missing/neutral states must never manufacture an injury
+                # designation during replay. In particular, stale and
+                # unknown evidence is visible audit metadata, not a penalty.
                 risk_state = item.get("state", "unknown")
+                if risk_state not in {"available", "limited", "unavailable", "suspended", "exempt", "under_review", "unknown", "stale"}:
+                    risk_state = "unknown"
                 player["risk_state"] = risk_state
                 player["risk_evidence"] = item.get("observations", [])
                 injury_status = risk_injury_status(risk_state)
                 if injury_status:
                     player["injury_status"] = injury_status
-                player["risk_freshness"] = risk.get("freshness", {})
+                player["risk_freshness"] = copy.deepcopy(freshness)
                 player["risk_provenance"] = item.get("provenance", [])
     raw_schedule = bundle.get("schedule_snapshot")
     if raw_schedule is None and "schedule" in bundle:
@@ -226,7 +259,7 @@ def replay(bundle: dict[str, Any]) -> dict[str, Any]:
                     raise ReplayFailure("recommendation", "Recommendation contains unavailable or duplicate Players", pick_no=pick_no, candidate_ids=ids)
                 if str(event["player_id"]) not in ids:
                     raise ReplayFailure("recommendation", "Participant selection was not one of the five recommended Players", pick_no=pick_no, selected_player_id=event["player_id"], candidate_ids=ids)
-                recommendations.append(_recommendation_summary(recommendation, pick_no))
+                recommendations.append(_recommendation_summary(recommendation, pick_no, active_snapshot))
                 for candidate in candidates:
                     components = candidate.get("components") or {}
                     evidence = candidate.get("schedule_evidence") or {}
