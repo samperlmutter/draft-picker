@@ -12,30 +12,39 @@ was found that met the spec's evidence and severity thresholds. Current player
 availability remains sourced from Sleeper and is refreshed separately by the
 risk pipeline.
 
-## Sources reviewed and exclusions
+## Review and exclusions
 
-- [NFL: Chiefs WR Rashee Rice will not face NFL discipline](https://www.nfl.com/news/chiefs-wr-rashee-rice-will-not-face-nfl-discipline-after-league-investigation)
-  reports that the league closed its investigation without discipline. This is
-  not a suspension risk.
-- [Chiefs: Initial 53-man roster](https://www.chiefs.com/news/here-s-a-look-at-the-chiefs-initial-53-man-roster-x9897)
-  lists Rice, Ken Walker, Travis Kelce, Patrick Mahomes, and Xavier Worthy on
-  the active roster. No qualifying event was added.
+- NFL reported that Puka Nacua *could* face a suspension, but the report did
+  not establish a league suspension. This remains unconfirmed and is excluded:
+  <https://www.nfl.com/news/puka-nacua-never-considered-contract-holdout-rebuilds-reputation-rams>
+- NFL reported that additional discipline for Rashee Rice was unclear. No
+  confirmed current suspension was found, so it is excluded:
+  <https://www.nfl.com/news/chiefs-andy-reid-expects-rashee-rice-to-be-ready-for-training-camp-after-jail-sentence-knee-surgery>
+- DK Metcalf's reported suspension was for the prior season and is expired;
+  it does not affect the current-season baseline:
+  <https://www.nfl.com/news/steelers-dk-metcalf-relieved-to-be-in-playoffs-declines-to-talk-incident>
+- Confirmed offseason transactions such as A.J. Brown's trade are already
+  represented in the current player/team and value snapshots. A team change
+  alone is not a risk event, and the available official report does not support
+  a negative role/workload adjustment:
+  <https://www.nfl.com/news/how-does-a-j-brown-fit-into-new-england-s-offense-patriots-just-traded-for-the-missing-piece>
+
+Additional source checks retained from the prior coverage review:
+
 - [NFL: Patriots trade for Eagles WR A.J. Brown](https://www.nfl.com/news/aj-brown-patriots-eagles-trade)
-  confirms Brown's team change, while [NFL's fit analysis](https://www.nfl.com/news/how-does-a-j-brown-fit-into-new-england-s-offense-patriots-just-traded-for-the-missing-piece)
-  describes an expected top-receiver role. The evidence indicates a positive
-  or neutral production change, not a player-event risk penalty.
+  confirms the team change. The accompanying fit analysis describes an
+  expected top-receiver role, which is positive or neutral rather than a risk
+  penalty.
 - [NFL: Texans WR Nico Collins clarifies his offseason limitation](https://www.nfl.com/news/texans-wr-nico-collins-clarifies-why-he-was-limited-during-offseason-workouts)
-  attributes the limitation to a planned rest period and says he was expected
-  to be ready for camp. No event was added.
+  attributes the limitation to planned rest and expected camp readiness. No
+  event was added.
 - [NFL: 2026 training-camp takeaways](https://www.nfl.com/news/what-we-learned-back-together-weekend-sunday-2026-training-camp)
-  describes Jahmyr Gibbs's camp hold-in and a minor reported back issue, but
-  the item is older than the current Sleeper snapshot and includes editorial
-  speculation. Sleeper remains authoritative for current availability, so no
-  duplicate event was added.
+  describes Jahmyr Gibbs's camp hold-in and a minor reported back issue, but it
+  is older than the current Sleeper snapshot and includes editorial
+  speculation. No duplicate event was added.
 - [NFL: Malik Nabers returns to team drills](https://amp.nfl.com/news/giants-wr-malik-nabers-felt-soul-come-back-to-life-after-participating-in-team-drills)
-  documents a gradual return from an ACL injury. This is an availability
-  dimension already handled by the Sleeper risk snapshot, not a separate role
-  or workload penalty.
+  documents a gradual return from an ACL injury. This availability dimension
+  is already handled by Sleeper, not a separate role/workload penalty.
 
-Missing event data is neutral under the spec. The evaluator will still score
-all 199 draftable players using the schedule and current Sleeper snapshot.
+Missing event data is neutral under the spec. The evaluator still scores all
+199 draftable players using the schedule and current Sleeper snapshot.
