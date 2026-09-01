@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.draft_advisor.replay import replay
+from src.draft_advisor.risk import build_risk_snapshot
 from src.draft_advisor.schedule import build_schedule_snapshot
 from tests.test_cli import ROOT, write_json
 
@@ -175,6 +176,28 @@ class ReplayTests(unittest.TestCase):
         text = self.run_replay(json_output=False)
         self.assertEqual(text.returncode, 0)
         self.assertIn("Replay PASSED: 180 picks, 15 Participant turns", text.stdout)
+
+    def test_replay_summary_preserves_risk_metadata(self) -> None:
+        bundle = build_bundle()
+        source = (
+            [{"player_id": "p1", "status": "active", "observed_at": 1}],
+            {"kind": "fixture", "parser": "draft-advisor-risk", "parser_version": "1"},
+        )
+        with patch("src.draft_advisor.risk.read_risk_source", return_value=source):
+            risk_snapshot = build_risk_snapshot(bundle["value_snapshots"][0]["players"], clock=lambda: 17.0)
+        bundle["risk_snapshot"] = risk_snapshot
+
+        result = replay(bundle)
+
+        self.assertTrue(result["passed"], result["first_failure"])
+        candidates = [
+            candidate
+            for item in result["recommendations"]
+            for candidate in [item["calculated_pick"], *item["backup_picks"]]
+        ]
+        self.assertTrue(candidates)
+        self.assertTrue(all(candidate["risk_state"] == "unknown" for candidate in candidates))
+        self.assertTrue(all(candidate["risk_visible"] is True for candidate in candidates))
 
     def test_prepared_schedule_context_is_replayed_without_source_requests(self) -> None:
         bundle = build_bundle()

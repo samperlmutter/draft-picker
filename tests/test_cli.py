@@ -149,6 +149,22 @@ class CliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no Draft State", result.stderr)
 
+    def test_risk_validate_and_refresh_cli_workflow(self) -> None:
+        env, fixtures = setup_fixture(self.tmp_path)
+        write_json(fixtures / "risk-observations.json", {"observations": [{"player_id": "p1", "status": "OUT", "observed_at": time.time()}]})
+
+        validated = cli(env, "risk", "validate", "--json")
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+        validation = json.loads(validated.stdout)
+        self.assertEqual(validation["report"]["status"], "pass")
+        self.assertFalse(validation["snapshot"]["authoritative"])
+
+        refreshed = cli(env, "risk", "refresh", "--json")
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        result = json.loads(refreshed.stdout)
+        self.assertTrue(result["authoritative"])
+        self.assertTrue((Path(env["DRAFT_ADVISOR_RUNTIME_DIR"]) / "risk-snapshot.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
