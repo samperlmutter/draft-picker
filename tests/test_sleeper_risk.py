@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.draft_advisor.risk import read_risk_source
+from src.draft_advisor.risk import read_risk_source, validate_risk
 
 
 class FakeSleeper:
@@ -55,3 +55,30 @@ def test_malformed_live_player_response_is_rejected(monkeypatch):
         assert "malformed player" in str(exc)
     else:
         raise AssertionError("malformed Sleeper player data must be rejected")
+
+
+def test_current_sleeper_status_vocabulary_passes_validation(monkeypatch):
+    monkeypatch.delenv("DRAFT_ADVISOR_FIXTURES", raising=False)
+    statuses = {
+        "ir": {"status": "Active", "injury_status": "IR"},
+        "pup": {"status": "Active", "injury_status": "PUP"},
+        "na": {"status": "Active", "injury_status": "NA"},
+        "sus": {"status": "Active", "injury_status": "Sus"},
+        "dnr": {"status": "Active", "injury_status": "DNR"},
+        "cov": {"status": "Active", "injury_status": "COV"},
+        "nfi": {"status": "Active", "injury_status": "Non Football Injury"},
+        "practice": {"status": "Practice Squad"},
+    }
+    observations, _ = read_risk_source(FakeSleeper(statuses))
+
+    snapshot, report = validate_risk({pid: {} for pid in statuses}, observations, clock=lambda: 1)
+
+    assert report["status"] == "pass"
+    assert snapshot["players"]["ir"]["state"] == "unavailable"
+    assert snapshot["players"]["pup"]["state"] == "unavailable"
+    assert snapshot["players"]["na"]["state"] == "available"
+    assert snapshot["players"]["sus"]["state"] == "suspended"
+    assert snapshot["players"]["dnr"]["state"] == "under_review"
+    assert snapshot["players"]["cov"]["state"] == "under_review"
+    assert snapshot["players"]["nfi"]["state"] == "under_review"
+    assert snapshot["players"]["practice"]["state"] == "unavailable"

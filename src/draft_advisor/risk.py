@@ -23,6 +23,17 @@ OVERRIDABLE_REVIEW_REASONS = {
     "conflicting_evidence", "weak_or_disciplinary_evidence", "high_impact",
     "stale", "unknown_status",
 }
+_STATUS_MAP = {
+    "active": "available", "available": "available", "healthy": "available",
+    "questionable": "limited", "limited": "limited", "doubtful": "limited",
+    "out": "unavailable", "inactive": "unavailable", "injuredreserve": "unavailable",
+    "ir": "unavailable", "pup": "unavailable", "physicallyunabletoperform": "unavailable", "practicesquad": "unavailable",
+    "unavailable": "unavailable", "suspended": "suspended", "suspension": "suspended", "sus": "suspended",
+    "exempt": "exempt", "commissionerexempt": "exempt", "investigation": "under_review",
+    "underreview": "under_review", "review": "under_review", "didnotreport": "under_review",
+    "dnr": "under_review", "cov": "under_review", "nonfootballinjury": "under_review", "nfi": "under_review",
+    "unknown": "unknown",
+}
 
 
 def risk_injury_status(state: Any) -> str | None:
@@ -81,6 +92,14 @@ def _source_payload() -> list[dict[str, Any]]:
     return rows
 
 
+def _sleeper_status(player: dict[str, Any]) -> Any:
+    """Prefer an injury designation, except Sleeper's NA means none."""
+    injury_status = player.get("injury_status")
+    if _norm(injury_status) in {"na", "none", "notapplicable"}:
+        return player.get("status")
+    return injury_status or player.get("status")
+
+
 def _sleeper_payload(client: SleeperClient) -> list[dict[str, Any]]:
     """Convert one Sleeper player response into the risk observation format."""
     players = client.players()
@@ -93,7 +112,7 @@ def _sleeper_payload(client: SleeperClient) -> list[dict[str, Any]]:
         if not isinstance(player, dict):
             raise ValueError("Sleeper players response contains a malformed player")
         # Sleeper's injury designation is more specific than its general status.
-        raw_status = player.get("injury_status") or player.get("status")
+        raw_status = _sleeper_status(player)
         if raw_status in (None, ""):
             continue
         observations.append({
@@ -123,16 +142,7 @@ def read_risk_source(client: SleeperClient | None = None) -> tuple[list[dict[str
 
 
 def _state(value: Any) -> str:
-    raw = _norm(value)
-    mapping = {
-        "active": "available", "available": "available", "healthy": "available",
-        "questionable": "limited", "limited": "limited", "doubtful": "limited",
-        "out": "unavailable", "inactive": "unavailable", "injuredreserve": "unavailable",
-        "unavailable": "unavailable", "suspended": "suspended", "suspension": "suspended",
-        "exempt": "exempt", "commissionerexempt": "exempt", "investigation": "under_review",
-        "underreview": "under_review", "review": "under_review", "unknown": "unknown",
-    }
-    return mapping.get(raw, "unknown")
+    return _STATUS_MAP.get(_norm(value), "unknown")
 
 
 def _identity_index(players: dict[str, Any]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
@@ -151,11 +161,7 @@ def _identity_index(players: dict[str, Any]) -> tuple[dict[str, list[str]], dict
 
 
 def _known_status(value: Any) -> bool:
-    return _norm(value) in {
-        "active", "available", "healthy", "questionable", "limited", "doubtful",
-        "out", "inactive", "injuredreserve", "unavailable", "suspended", "suspension",
-        "exempt", "commissionerexempt", "investigation", "underreview", "review", "unknown",
-    }
+    return _norm(value) in _STATUS_MAP
 
 
 def _event_time(observation: dict[str, Any]) -> float:
