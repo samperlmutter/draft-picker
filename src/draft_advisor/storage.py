@@ -21,6 +21,8 @@ class Storage:
         self.risk_validation_path = root / "risk-validation.json"
         self.risk_validation_report_path = root / "risk-validation-report.json"
         self.risk_path = root / "risk-snapshot.json"
+        self.risk_evaluation_baseline_path = root / "risk-evaluation-baseline.json"
+        self.risk_evaluation_day_of_path = root / "risk-evaluation-day-of.json"
         self.monitor_ready_path = root / "monitor.ready"
         self.lock_path = root / "publication.lock"
 

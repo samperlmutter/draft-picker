@@ -34,6 +34,9 @@ def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         "risk_evidence": copy.deepcopy(candidate.get("risk_evidence", [])),
         "risk_freshness": copy.deepcopy(candidate.get("risk_freshness", {})),
         "risk_provenance": copy.deepcopy(candidate.get("risk_provenance", [])),
+        "event_risk_tier": candidate.get("event_risk_tier", "none"),
+        "schedule_risk_tier": candidate.get("schedule_risk_tier", "none"),
+        "combined_risk_adjustment_pct": candidate.get("combined_risk_adjustment_pct", 0.0),
         "schedule_data_quality": candidate.get("schedule_data_quality", "unavailable"),
         "regular_season_matchup": components.get("regular_season_matchup", 0.0),
         "playoff_matchup": components.get("playoff_matchup", 0.0),
@@ -155,6 +158,8 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
                     player["injury_status"] = injury_status
                 player["risk_freshness"] = copy.deepcopy(freshness)
                 player["risk_provenance"] = item.get("provenance", [])
+                if isinstance(item.get("event_evaluation"), dict):
+                    player["event_evaluation"] = copy.deepcopy(item["event_evaluation"])
     raw_schedule = bundle.get("schedule_snapshot")
     if raw_schedule is None and "schedule" in bundle:
         raw_schedule = bundle["schedule"]

@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import load_config
 from .monitor import monitor_pid, refresh, run, start, stop
-from .service import ensure_values, read_recommendation, recalculate, refresh_risk, validate_risk_fixture
+from .service import ensure_values, evaluate_risk, read_recommendation, recalculate, refresh_risk, validate_risk_fixture
 from .risk import apply_risk_overrides, validate_risk_snapshot
 from .sleeper import SleeperClient
 from .storage import Storage
@@ -43,6 +43,10 @@ def _parser() -> argparse.ArgumentParser:
     risk_override = risk_sub.add_parser("override", help="record a dated, source-linked review decision")
     risk_override.add_argument("--input", "--override-file", dest="override_file", required=True, help="JSON override object/list, or - for stdin")
     risk_override.add_argument("--json", action="store_true", dest="json_output")
+    risk_evaluate = risk_sub.add_parser("evaluate", help="evaluate schedule and researched player-event risk")
+    risk_evaluate.add_argument("--phase", choices=("baseline", "day-of"), required=True)
+    risk_evaluate.add_argument("--events-file", help="JSON research-event packet")
+    risk_evaluate.add_argument("--json", action="store_true", dest="json_output")
     monitor = sub.add_parser("monitor", help="manage the local monitor")
     monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
     for name in ("start", "stop", "run"):
@@ -134,6 +138,14 @@ def _risk_review_text(snapshot: dict[str, Any], report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _risk_evaluation_text(evaluation: dict[str, Any]) -> str:
+    phase = evaluation["phase"].replace("-", " ")
+    lines = [f"Risk evaluation ({phase}): {evaluation['player_count']} players; {len(evaluation.get('changes') or [])} material changes."]
+    for change in evaluation.get("changes") or []:
+        lines.append(f"{change['player_id']}: {change['old_tier']} -> {change['new_tier']} — {'; '.join(change['reason'])}")
+    return "\n".join(lines)
+
+
 def _load_override_payload(path: str) -> list[dict[str, Any]]:
     if path == "-":
         payload = json.load(sys.stdin)
@@ -196,6 +208,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(result, sort_keys=True))
             else:
                 print(f"Recorded {result['applied']} risk override(s) in the non-authoritative validation snapshot.\nNext step: {result['next_step']}.\nSnapshot: {result['snapshot']}")
+            return 0
+        if args.command == "risk" and args.risk_command == "evaluate":
+            storage = Storage.from_environment()
+            evaluation = evaluate_risk(storage, args.phase, args.events_file)
+            if args.json_output:
+                print(json.dumps(evaluation, sort_keys=True))
+            else:
+                print(_risk_evaluation_text(evaluation))
             return 0
         config = load_config(args.config)
         storage = Storage.from_environment()

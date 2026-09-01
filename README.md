@@ -61,6 +61,16 @@ With no `DRAFT_ADVISOR_FIXTURES` override, validation and refresh read Sleeper's
 current `/players/nfl` response and normalize each player's injury designation
 or general status. Fixtures remain available for deterministic tests.
 
+After preparing current values and schedule data, run `draft-advisor risk evaluate
+--phase baseline --events-file player-events.json` to save the full pre-draft
+evaluation. Immediately before the draft, repeat the risk validate/refresh steps
+and run `draft-advisor risk evaluate --phase day-of --events-file
+player-events-day-of.json`; the command reports material changes and updates the
+same authoritative risk snapshot used by Recommendations and replay. Event
+packets contain `player_id`, `event_type`, `impact_tier`, `summary`,
+`observed_at`, `source`, and `evidence_url`, with optional effective and expiry
+timestamps.
+
 The repository skill at `.agents/skills/draft-advisor/SKILL.md` provides the thin
 Codex adapter for natural preparation, recommendation, and confirmed-trade
 requests. Trade JSON contains `confirmed`, `give`, and `receive`; each asset is a
