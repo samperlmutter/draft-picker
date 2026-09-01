@@ -124,7 +124,7 @@ The Participant always makes the pick in Sleeper. The tool does not submit or pr
 - The product is a personal Draft Assistant for one Sleeper league and one 2026 draft. It is not a multi-user or commercial product.
 - Python 3 is the implementation language. Runtime dependencies must remain small. Standard-library capabilities are preferred when they provide a clear implementation.
 - The CLI module is the sole external interface and the highest test seam. All monitoring, source access, player matching, Draft Score calculation, roster strategy, replay, and Trade Evaluation behavior stays behind this interface.
-- The CLI interface supports monitor start, monitor stop, status, prepare, recommend, trade evaluation, and replay operations.
+- The CLI interface supports monitor start, monitor stop, status, prepare, recommend, trade evaluation, replay, and player-event risk evaluation operations.
 - Every operation supports a human-readable result. Read operations and evaluations also support a stable JSON result for agent harnesses.
 - Project configuration stores the Sleeper league ID, Participant username, five-second poll interval, and 30-minute external-source refresh interval. It stores no Sleeper credentials.
 - Runtime state is local and is not versioned. The monitor writes complete Draft State snapshots atomically so that a concurrent recommendation never reads a partial update.
@@ -144,6 +144,18 @@ The Participant always makes the pick in Sleeper. The tool does not submit or pr
 - The roster strategy uses soft position limits. It usually selects one QB and one TE before backups, fills RB, WR, and FLEX capacity, keeps most bench positions for RB and WR, never selects a bench K or DEF, and delays K and DEF until the final rounds.
 - Early rounds favor dependable starting value. Later rounds increase the value of upside. Shared bye weeks and Players from one NFL team are tie-breakers only.
 - Inactive Players are not eligible. Out, IR, and PUP designations receive a strong penalty. If such a Player remains competitive, the output includes an injury warning.
+- The player-event and schedule-risk evaluation covers every draftable Player for the current fantasy season, including regular-season and playoff weeks. Regular-season impact receives more weight because it affects more fantasy weeks.
+- Schedule risk uses opponent strength by position, bye weeks, and playoff matchup quality. It excludes travel, weather, and speculative narratives.
+- Player events are limited to current injury or availability, suspension, team change, and meaningful role or workload change. A team change alone is not a risk event; it matters only when credible evidence indicates a production or role change.
+- Sleeper is authoritative for current availability. Official team or NFL information is authoritative for role and suspension events. Structured historical data establishes schedule context. Contradictory sources are resolved independently by dimension, with the most recent authoritative source winning; reports are never averaged.
+- A research event uses the normalized fields `player_id`, `event_type`, `impact_tier`, `summary`, `observed_at`, optional `effective_at`, optional `expires_at`, `source`, and `evidence_url`. `event_type` is one of `availability`, `suspension`, `team_change`, `role_change`, or `workload_change`; `impact_tier` is `none`, `material`, or `severe`.
+- A material event plausibly affects one or more games or meaningfully changes expected usage. A severe event plausibly causes a multi-week absence, suspension, or major loss of role. Events without credible evidence have no score effect.
+- The evaluation produces one schedule tier, one player-event tier, a bounded combined Draft Score adjustment, and the evidence supporting each result. Schedule matchup quality may produce a bounded positive adjustment. Player events may only reduce or leave a score unchanged.
+- The combined schedule and event adjustment is capped at 10% of the pre-risk Draft Score. The default tier adjustments are 0% for no material impact, -3% for material risk, and -8% to -10% for severe risk. Existing hard availability rules for inactive or Out/IR/PUP Players remain in force.
+- Multiple events for one Player use the latest authoritative event in each category. Duplicate events do not stack; only the highest applicable severity is applied.
+- The pre-draft evaluation establishes a baseline snapshot for all draftable Players. The day-of evaluation runs the same logic immediately before preparation, scores from its current snapshot, and reports only material changes with the old tier, new tier, reason, and source. Severe changes are always reported.
+- Missing event data is neutral. If the day-of evaluation cannot complete, the last valid baseline remains usable but is marked stale or incomplete; no new penalty is introduced without fresh evidence.
+- The CLI exposes `risk evaluate --phase baseline` and `risk evaluate --phase day-of`. Both consume the same current schedule, value, availability, and research-event inputs; day-of additionally compares against the stored baseline. The resulting evaluation is attached to the authoritative risk snapshot so live Recommendations, replay, and the evidence packet use the same data.
 - The immediate recommendation result contains one Calculated Pick and four ordered Backup Picks with compact component evidence.
 - A candidate is eligible for a model-driven reorder only when its Draft Score is at least 95% of the leading Draft Score.
 - The CLI produces a compact evidence packet for the agent. It includes only the leading candidates, Draft Score components, roster fit, injury flags, scarcity, expected survival, and relevant opponent needs.
@@ -178,6 +190,7 @@ The Participant always makes the pick in Sleeper. The tool does not submit or pr
 - Strategy tests verify roster fit, FLEX eligibility, soft QB and TE limits, RB and WR bench preference, final-round K and DEF behavior, early-round stability, and late-round upside.
 - Availability tests verify that ADP and the needs of intervening opponents change wait cost without replacing primary player value.
 - Injury tests verify inactive exclusion, Out/IR/PUP penalties, and visible warnings for competitive injured Players.
+- Player-event evaluation tests run the CLI baseline and day-of phases with recorded schedule, availability, and official-event packets. They verify tier classification, bounded score adjustments, source precedence, duplicate suppression, stale/expired events, baseline diffs, and fallback to the last valid baseline.
 - Keeper tests verify that kept Players never appear as available candidates.
 - Traded-pick tests verify that the current and future Participant turns follow live ownership instead of the original draft slot.
 - Output tests verify one Calculated Pick, four ordered Backup Picks, compact evidence, human-readable text, stable JSON, and no confidence label.

@@ -6,6 +6,12 @@ import time
 from typing import Any, Callable
 
 from .config import Config
+from .event_risk import (
+    attach_evaluation,
+    evaluate_schedule_event_risk,
+    read_event_packet,
+    validate_evaluation,
+)
 from .recommend import calculate
 from .schedule import (
     ScheduleUnavailable,
@@ -92,6 +98,44 @@ def refresh_risk(storage: Storage, players: dict[str, Any], clock: Callable[[], 
     with storage.publication_lock():
         storage.write_json(storage.risk_path, snapshot)
     return snapshot
+
+
+def evaluate_risk(
+    storage: Storage,
+    phase: str,
+    events_file: str | None = None,
+    clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Evaluate the current board against schedule and researched player events."""
+    risk_snapshot = validate_authoritative_risk_snapshot(
+        storage.read_json(storage.risk_path, "risk refresh is required before risk evaluation")
+    )
+    value_snapshot = read_values(storage)
+    try:
+        schedule = read_schedule(storage)
+    except ValueError:
+        schedule = None
+    baseline = None
+    if phase == "day-of":
+        baseline = validate_evaluation(
+            storage.read_json(storage.risk_evaluation_baseline_path, "baseline risk evaluation is required before day-of evaluation")
+        )
+    evaluation = evaluate_schedule_event_risk(
+        value_snapshot["players"],
+        schedule,
+        risk_snapshot,
+        read_event_packet(events_file),
+        phase=phase,
+        clock=clock,
+        baseline=baseline,
+    )
+    enriched = attach_evaluation(risk_snapshot, evaluation)
+    destination = storage.risk_evaluation_baseline_path if phase == "baseline" else storage.risk_evaluation_day_of_path
+    with storage.publication_lock():
+        storage.write_json(destination, evaluation)
+        storage.write_json(storage.risk_path, enriched)
+        recalculate(storage)
+    return evaluation
 
 
 def read_risk(storage: Storage, clock: Callable[[], float] = time.time) -> dict[str, Any] | None:
@@ -260,6 +304,12 @@ def recalculate(
                 injury_status = risk_injury_status(state)
                 if injury_status:
                     player["injury_status"] = injury_status
+        evaluation = risk.get("schedule_event_evaluation")
+        if isinstance(evaluation, dict):
+            for pid, item in (evaluation.get("players") or {}).items():
+                player = current_snapshot["players"].get(pid)
+                if player is not None and isinstance(item, dict):
+                    player["event_evaluation"] = item
     if schedule is None:
         try:
             schedule = read_schedule(storage)

@@ -432,7 +432,17 @@ def calculate(
         )
         diversity_tiebreaker = team_tiebreaker + bye_week_penalty
         schedule_evidence = _schedule_evidence(state, schedule, player_id)
+        event_evaluation = player.get("event_evaluation") if isinstance(player.get("event_evaluation"), dict) else None
         schedule_adjustment = float(schedule_evidence["schedule_adjustment"])
+        event_risk_adjustment = 0.0
+        combined_risk_adjustment_pct = 0.0
+        if event_evaluation is not None:
+            combined_risk_adjustment_pct = _bounded(
+                float(event_evaluation.get("combined_adjustment_pct", 0.0)), -0.10, 0.10
+            )
+            pre_risk_score = quality + fit + scarcity + wait_cost + demand + round_strategy + injury_penalty + diversity_tiebreaker
+            schedule_adjustment = round(pre_risk_score * combined_risk_adjustment_pct, 3)
+            event_risk_adjustment = round(schedule_adjustment - float(event_evaluation.get("schedule_adjustment_pct", 0.0)) * pre_risk_score, 3)
         roster_collision = _roster_collision_evidence(
             roster_player_ids, snapshot["players"], requirements, schedule, player_id
         )
@@ -450,6 +460,10 @@ def calculate(
             "regular_season_matchup": schedule_evidence["regular_season"]["adjustment"],
             "playoff_matchup": schedule_evidence["playoffs"]["adjustment"],
             "schedule_adjustment": schedule_adjustment,
+            "event_risk_adjustment": event_risk_adjustment,
+            "combined_risk_adjustment_pct": round(combined_risk_adjustment_pct, 6),
+            "schedule_risk_tier": event_evaluation.get("schedule_tier") if event_evaluation else "none",
+            "event_risk_tier": event_evaluation.get("event_tier") if event_evaluation else "none",
             "roster_collision": roster_collision_adjustment,
         }
         candidates.append({
@@ -465,6 +479,9 @@ def calculate(
             "adp": adp,
             "schedule_data_quality": schedule_evidence["data_quality"],
             "schedule_evidence": schedule_evidence,
+            "event_evaluation": event_evaluation,
+            "schedule_risk_tier": event_evaluation.get("schedule_tier", "none") if event_evaluation else "none",
+            "event_risk_tier": event_evaluation.get("event_tier", "none") if event_evaluation else "none",
             "roster_collision_adjustment": roster_collision_adjustment,
         })
     candidates.sort(key=lambda item: (-item["draft_score"], -float(available[item["player_id"]]["value"]), item["name"] or "", item["player_id"]))
