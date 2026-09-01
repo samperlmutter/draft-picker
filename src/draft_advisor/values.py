@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .sleeper import SleeperClient
+from .rules import LEGAL_POSITIONS, canonical_position
 
 
 FANTASYCALC_URL = "https://api.fantasycalc.com/values/current?isDynasty=false&numQbs=1&numTeams=12&ppr=1"
@@ -53,11 +54,14 @@ def _fantasycalc_rows(payload: Any) -> list[dict[str, Any]]:
         value = row.get("value", row.get("redraftValue", player.get("value")))
         if value is None:
             continue
+        position = canonical_position(player.get("position") or row.get("position"))
+        if position not in LEGAL_POSITIONS:
+            continue
         result.append({
             "sleeper_id": player.get("sleeperId") or player.get("sleeper_id") or row.get("sleeperId"),
             "name": player.get("name") or row.get("name"),
             "team": player.get("maybeTeam") or player.get("team") or row.get("team"),
-            "position": player.get("position") or row.get("position"),
+            "position": position,
             "value": float(value),
             "stability": float(row.get("stability", player.get("stability", 0.5)) or 0.5),
             "upside": float(row.get("upside", player.get("upside", 0.5)) or 0.5),
@@ -76,7 +80,10 @@ def _ffc_rows(payload: Any) -> list[dict[str, Any]]:
         adp = row.get("adp") or row.get("overall_pick")
         if adp is None:
             continue
-        result.append({"name": row.get("name"), "team": row.get("team"), "position": row.get("position"), "adp": float(adp)})
+        position = canonical_position(row.get("position"))
+        if position not in LEGAL_POSITIONS:
+            continue
+        result.append({"name": row.get("name"), "team": row.get("team"), "position": position, "adp": float(adp)})
     if len(result) < 5:
         raise ValueError("Fantasy Football Calculator response is incomplete (fewer than five usable players)")
     return result
@@ -144,6 +151,8 @@ def validate_value_snapshot(snapshot: Any) -> dict[str, Any]:
         value = float(player["value"])
         if not math.isfinite(value) or value < 0:
             raise ValueError(f"value snapshot player {player_id} has an invalid value")
+        if canonical_position(player.get("position")) not in LEGAL_POSITIONS:
+            raise ValueError(f"value snapshot player {player_id} has an unsupported position")
     if not isinstance(snapshot.get("omitted", []), list):
         raise ValueError("value snapshot omissions must be an array")
     return snapshot

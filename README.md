@@ -35,6 +35,42 @@ FantasyCalc redraft values are the primary quality signal; Fantasy Football
 Calculator ADP is used only to estimate the cost of waiting. Complete external
 snapshots and recommendations are atomically activated in the runtime directory.
 
+Schedule preparation is an independent cache. By default it downloads the
+season schedule and the previous completed season's weekly player stats from
+the public nflverse releases, then calculates position-specific opponent
+matchup ratings locally. A schedule provider can also be supplied through a
+client `schedule(season)` method, recorded fixtures can use
+`schedule__<season>.json` (or `schedule.json`) under `DRAFT_ADVISOR_FIXTURES`,
+and a configured JSON URL can use `schedule_source_url` in the config (with
+`{season}` as an optional placeholder). The provider payload supplies games and
+position-specific opponent matchup ratings; the application does not assume
+Sleeper exposes either one. Prepared data is stored as `schedule-snapshot.json`
+and is reused until its freshness window, League Rules identity, or relevant
+player team/position inputs change.
+Incomplete or failed refreshes leave the previous valid snapshot intact and
+fall back to neutral schedule evidence when no valid snapshot is available.
+
+Risk data uses an explicit validation workflow. Run `draft-advisor risk validate`
+to publish a non-authoritative diagnostic snapshot, inspect unresolved items with
+`draft-advisor risk review`, record a dated source-linked decision with
+`draft-advisor risk override --input override.json`, and then run
+`draft-advisor risk refresh` to publish the authoritative snapshot. Invalid,
+empty, stale, ambiguous, or weak evidence cannot replace valid risk data; when
+no authoritative snapshot is available, recommendations apply no risk penalty.
+With no `DRAFT_ADVISOR_FIXTURES` override, validation and refresh read Sleeper's
+current `/players/nfl` response and normalize each player's injury designation
+or general status. Fixtures remain available for deterministic tests.
+
+After preparing current values and schedule data, run `draft-advisor risk evaluate
+--phase baseline --events-file player-events.json` to save the full pre-draft
+evaluation. Immediately before the draft, repeat the risk validate/refresh steps
+and run `draft-advisor risk evaluate --phase day-of --events-file
+player-events-day-of.json`; the command reports material changes and updates the
+same authoritative risk snapshot used by Recommendations and replay. Event
+packets contain `player_id`, `event_type`, `impact_tier`, `summary`,
+`observed_at`, `source`, and `evidence_url`, with optional effective and expiry
+timestamps.
+
 The repository skill at `.agents/skills/draft-advisor/SKILL.md` provides the thin
 Codex adapter for natural preparation, recommendation, and confirmed-trade
 requests. Trade JSON contains `confirmed`, `give`, and `receive`; each asset is a
@@ -42,5 +78,9 @@ current-draft `player` with `player_id` or a remaining `pick` with `pick_no`.
 
 `replay` accepts a self-contained initial Draft State, the same ordered pick-event
 objects written by the monitor, complete player-value snapshots, refresh points,
-and confirmed trade checks. It performs no source requests and returns a concise
-readiness summary or the first failing pick/evaluation with diagnostic context.
+an optional prepared `schedule_snapshot`, and confirmed trade checks. It validates
+the schedule cache identity against the initial League Rules, performs no source
+requests, and returns a concise readiness summary or the first failing
+pick/evaluation with diagnostic context. Text Recommendations include compact
+regular-season, playoff, and roster-collision evidence; JSON retains the detailed
+weekly evidence.

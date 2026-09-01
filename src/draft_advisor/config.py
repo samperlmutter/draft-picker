@@ -12,6 +12,9 @@ class Config:
     participant_username: str
     poll_interval_seconds: float = 5
     external_refresh_interval_seconds: float = 1800
+    season: int | None = None
+    schedule_refresh_interval_seconds: float = 1800
+    schedule_source_url: str | None = None
 
 
 def load_config(path: str | None = None) -> Config:
@@ -27,6 +30,8 @@ def load_config(path: str | None = None) -> Config:
         raise ValueError(f"configuration is missing: {', '.join(missing)}")
     allowed = set(Config.__dataclass_fields__)
     config = Config(**{key: value for key, value in data.items() if key in allowed})
-    if config.poll_interval_seconds <= 0 or config.external_refresh_interval_seconds <= 0:
+    if config.poll_interval_seconds <= 0 or config.external_refresh_interval_seconds <= 0 or config.schedule_refresh_interval_seconds <= 0:
         raise ValueError("refresh intervals must be positive")
+    if config.season is not None and int(config.season) < 2000:
+        raise ValueError("season must be a valid NFL season")
     return config

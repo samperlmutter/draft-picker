@@ -8,7 +8,9 @@ from typing import Any
 
 from .config import load_config
 from .monitor import monitor_pid, refresh, run, start, stop
-from .service import ensure_values, read_recommendation, recalculate
+from .service import ensure_values, evaluate_risk, read_recommendation, recalculate, refresh_risk, validate_risk_fixture
+from .risk import apply_risk_overrides, validate_risk_snapshot
+from .sleeper import SleeperClient
 from .storage import Storage
 from .trade import evaluate
 from .replay import replay
@@ -30,6 +32,21 @@ def _parser() -> argparse.ArgumentParser:
     replay_command = sub.add_parser("replay", help="replay and verify a complete recorded draft")
     replay_command.add_argument("--input", required=True, help="self-contained replay JSON file")
     replay_command.add_argument("--json", action="store_true", dest="json_output")
+    risk = sub.add_parser("risk", help="validate player-risk source data")
+    risk_sub = risk.add_subparsers(dest="risk_command", required=True)
+    risk_validate = risk_sub.add_parser("validate", help="validate current risk observations")
+    risk_validate.add_argument("--json", action="store_true", dest="json_output")
+    risk_refresh = risk_sub.add_parser("refresh", help="refresh and publish authoritative risk")
+    risk_refresh.add_argument("--json", action="store_true", dest="json_output")
+    risk_review = risk_sub.add_parser("review", help="show risk observations requiring human review")
+    risk_review.add_argument("--json", action="store_true", dest="json_output")
+    risk_override = risk_sub.add_parser("override", help="record a dated, source-linked review decision")
+    risk_override.add_argument("--input", "--override-file", dest="override_file", required=True, help="JSON override object/list, or - for stdin")
+    risk_override.add_argument("--json", action="store_true", dest="json_output")
+    risk_evaluate = risk_sub.add_parser("evaluate", help="evaluate schedule and researched player-event risk")
+    risk_evaluate.add_argument("--phase", choices=("baseline", "day-of"), required=True)
+    risk_evaluate.add_argument("--events-file", help="JSON research-event packet")
+    risk_evaluate.add_argument("--json", action="store_true", dest="json_output")
     monitor = sub.add_parser("monitor", help="manage the local monitor")
     monitor_sub = monitor.add_subparsers(dest="monitor_command", required=True)
     for name in ("start", "stop", "run"):
@@ -66,6 +83,14 @@ def _recommendation_text(recommendation: dict[str, Any]) -> str:
     pick = recommendation["calculated_pick"]
     lines = [f"Calculated Pick: {pick['name']} ({pick['position']}, score {pick['draft_score']:.3f})"]
     lines.append(f"Evidence: {pick['roster_fit']}; survival {pick['expected_survival_to_next_turn']:.0%}; scarcity {pick['scarcity']:.3f}")
+    components = pick.get("components") or {}
+    lines.append(
+        "Schedule: "
+        f"{pick.get('schedule_data_quality', 'unavailable')}; "
+        f"regular {float(components.get('regular_season_matchup', 0.0)):+.3f}; "
+        f"playoffs {float(components.get('playoff_matchup', 0.0)):+.3f}; "
+        f"collision {float(components.get('roster_collision', 0.0)):+.3f}"
+    )
     if pick.get("injury_warning"):
         lines.append(f"Warning: {pick['injury_warning']}")
     lines.append("Backup Picks:")
@@ -94,6 +119,46 @@ def _replay_text(result: dict[str, Any]) -> str:
     return f"Replay PASSED: {summary['picks_processed']} picks, {summary['participant_turns']} Participant turns, {summary['trade_evaluations']} trade checks; final roster {json.dumps(summary['final_roster'], sort_keys=True)}."
 
 
+def _risk_review_text(snapshot: dict[str, Any], report: dict[str, Any]) -> str:
+    queue = report.get("review") or []
+    lines = [f"Risk review: {len(queue)} item(s) require human review."]
+    for index, item in enumerate(queue, 1):
+        player_id = item.get("player_id") or "unresolved"
+        reason = str(item.get("reason") or "unknown")
+        detail = item.get("name") or item.get("observation_id") or ""
+        suffix = f" ({detail})" if detail else ""
+        lines.append(f"{index}. {player_id}: {reason}{suffix}")
+        if item.get("candidate_player_ids"):
+            lines.append(f"   candidates: {', '.join(item['candidate_player_ids'])}")
+        if item.get("candidate_states"):
+            lines.append(f"   states: {', '.join(item['candidate_states'])}")
+    if not queue:
+        lines[0] = "Risk review: clear. No items require human review."
+    lines.append(f"Validation snapshot: {snapshot.get('_path', 'runtime risk-validation.json')}")
+    return "\n".join(lines)
+
+
+def _risk_evaluation_text(evaluation: dict[str, Any]) -> str:
+    phase = evaluation["phase"].replace("-", " ")
+    lines = [f"Risk evaluation ({phase}): {evaluation['player_count']} players; {len(evaluation.get('changes') or [])} material changes."]
+    for change in evaluation.get("changes") or []:
+        lines.append(f"{change['player_id']}: {change['old_tier']} -> {change['new_tier']} — {'; '.join(change['reason'])}")
+    return "\n".join(lines)
+
+
+def _load_override_payload(path: str) -> list[dict[str, Any]]:
+    if path == "-":
+        payload = json.load(sys.stdin)
+    else:
+        with open(path) as handle:
+            payload = json.load(handle)
+    if isinstance(payload, dict):
+        payload = [payload]
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        raise ValueError("override input must be a JSON object or an array of objects")
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -102,6 +167,56 @@ def main(argv: list[str] | None = None) -> int:
                 result = replay(json.load(handle))
             print(json.dumps(result, sort_keys=True) if args.json_output else _replay_text(result))
             return 0 if result["passed"] else 1
+        if args.command == "risk" and args.risk_command == "validate":
+            storage = Storage.from_environment()
+            snapshot, report = validate_risk_fixture(storage, SleeperClient().players())
+            print(json.dumps({"snapshot": snapshot, "report": report}, sort_keys=True) if args.json_output else f"Risk validation {report['status']}: {report['player_count']} players, {report['observation_count']} observations, {report['matched_count']} matched, {report['unmatched_count']} unmatched, {report['ambiguous_count']} ambiguous; review {report['review_count']}.\nSnapshot: {storage.risk_validation_path}\nReport: {storage.risk_validation_report_path}")
+            return 0 if report["status"] == "pass" else 1
+        if args.command == "risk" and args.risk_command == "refresh":
+            storage = Storage.from_environment()
+            snapshot = refresh_risk(storage, SleeperClient().players())
+            result = {"refreshed": True, "phase": snapshot["phase"], "authoritative": snapshot["authoritative"], "player_count": len(snapshot["players"]), "refreshed_at": snapshot["refreshed_at"]}
+            print(json.dumps(result, sort_keys=True) if args.json_output else f"Risk refreshed for {result['player_count']} players. Snapshot: {storage.risk_path}")
+            return 0
+        if args.command == "risk" and args.risk_command == "review":
+            storage = Storage.from_environment()
+            snapshot = validate_risk_snapshot(storage.read_json(storage.risk_validation_path, "no risk validation snapshot is available; run 'risk validate' first"))
+            report = storage.read_json(storage.risk_validation_report_path, "no risk validation report is available; run 'risk validate' first")
+            result = {"snapshot": snapshot, "report": report, "review": report.get("review") or []}
+            if args.json_output:
+                print(json.dumps(result, sort_keys=True))
+            else:
+                snapshot_for_text = dict(snapshot)
+                snapshot_for_text["_path"] = str(storage.risk_validation_path)
+                print(_risk_review_text(snapshot_for_text, report))
+            return 1 if result["review"] else 0
+        if args.command == "risk" and args.risk_command == "override":
+            storage = Storage.from_environment()
+            snapshot = validate_risk_snapshot(storage.read_json(storage.risk_validation_path, "no risk validation snapshot is available; run 'risk validate' first"))
+            overrides = _load_override_payload(args.override_file)
+            with storage.publication_lock():
+                applied = apply_risk_overrides(snapshot, overrides)
+                storage.write_json(storage.risk_validation_path, applied)
+                report = storage.read_json(storage.risk_validation_report_path, "")
+                if isinstance(report, dict) and isinstance(applied.get("data_quality"), dict):
+                    for key in ("status", "review", "review_count"):
+                        if key in applied["data_quality"]:
+                            report[key] = applied["data_quality"][key]
+                    storage.write_json(storage.risk_validation_report_path, report)
+            result = {"applied": len(applied.get("overrides", [])) - len(snapshot.get("overrides", [])), "authoritative": False, "snapshot": str(storage.risk_validation_path), "next_step": "run risk refresh to publish these overrides in risk-snapshot.json"}
+            if args.json_output:
+                print(json.dumps(result, sort_keys=True))
+            else:
+                print(f"Recorded {result['applied']} risk override(s) in the non-authoritative validation snapshot.\nNext step: {result['next_step']}.\nSnapshot: {result['snapshot']}")
+            return 0
+        if args.command == "risk" and args.risk_command == "evaluate":
+            storage = Storage.from_environment()
+            evaluation = evaluate_risk(storage, args.phase, args.events_file)
+            if args.json_output:
+                print(json.dumps(evaluation, sort_keys=True))
+            else:
+                print(_risk_evaluation_text(evaluation))
+            return 0
         config = load_config(args.config)
         storage = Storage.from_environment()
         if args.command == "status":

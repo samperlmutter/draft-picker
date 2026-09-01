@@ -149,6 +149,43 @@ class CliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no Draft State", result.stderr)
 
+    def test_risk_validate_and_refresh_cli_workflow(self) -> None:
+        env, fixtures = setup_fixture(self.tmp_path)
+        write_json(fixtures / "risk-observations.json", {"observations": [{"player_id": "p1", "status": "OUT", "observed_at": time.time()}]})
+
+        validated = cli(env, "risk", "validate", "--json")
+        self.assertEqual(validated.returncode, 0, validated.stderr)
+        validation = json.loads(validated.stdout)
+        self.assertEqual(validation["report"]["status"], "pass")
+        self.assertFalse(validation["snapshot"]["authoritative"])
+
+        refreshed = cli(env, "risk", "refresh", "--json")
+        self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+        result = json.loads(refreshed.stdout)
+        self.assertTrue(result["authoritative"])
+        self.assertTrue((Path(env["DRAFT_ADVISOR_RUNTIME_DIR"]) / "risk-snapshot.json").exists())
+
+    def test_risk_evaluation_baseline_and_day_of_cli_workflow(self) -> None:
+        env, fixtures = setup_fixture(self.tmp_path)
+        write_json(fixtures / "risk-observations.json", {"observations": [{"player_id": "p1", "status": "OUT", "observed_at": time.time()}]})
+        self.assertEqual(cli(env, "status", "--refresh").returncode, 0)
+        self.assertEqual(cli(env, "risk", "validate").returncode, 0)
+        self.assertEqual(cli(env, "risk", "refresh").returncode, 0)
+        baseline_events = fixtures / "events-baseline.json"
+        write_json(baseline_events, {"events": [{"player_id": "p2", "event_type": "role_change", "impact_tier": "material", "summary": "Role is stable", "observed_at": 100, "source": "official_team", "evidence_url": "https://example.test/stable"}]})
+        baseline = cli(env, "risk", "evaluate", "--phase", "baseline", "--events-file", str(baseline_events), "--json")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        self.assertEqual(json.loads(baseline.stdout)["phase"], "baseline")
+        day_of_events = fixtures / "events-day-of.json"
+        write_json(day_of_events, {"events": [{"player_id": "p2", "event_type": "role_change", "impact_tier": "severe", "summary": "Role is lost", "observed_at": 101, "source": "official_team", "evidence_url": "https://example.test/lost"}]})
+        day_of = cli(env, "risk", "evaluate", "--phase", "day-of", "--events-file", str(day_of_events), "--json")
+        self.assertEqual(day_of.returncode, 0, day_of.stderr)
+        result = json.loads(day_of.stdout)
+        self.assertEqual(result["phase"], "day-of")
+        self.assertEqual(result["changes"][0]["player_id"], "p2")
+        self.assertTrue((Path(env["DRAFT_ADVISOR_RUNTIME_DIR"]) / "risk-evaluation-baseline.json").exists())
+        self.assertTrue((Path(env["DRAFT_ADVISOR_RUNTIME_DIR"]) / "risk-evaluation-day-of.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
