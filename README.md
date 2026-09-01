@@ -55,8 +55,10 @@ to publish a non-authoritative diagnostic snapshot, inspect unresolved items wit
 `draft-advisor risk review`, record a dated source-linked decision with
 `draft-advisor risk override --input override.json`, and then run
 `draft-advisor risk refresh` to publish the authoritative snapshot. Invalid,
-empty, stale, ambiguous, or weak evidence cannot replace valid risk data; when
-no authoritative snapshot is available, recommendations apply no risk penalty.
+empty, ambiguous, or weak evidence cannot replace valid risk data; when no
+authoritative snapshot is available, recommendations apply no risk penalty.
+Authoritative risk snapshots are not invalidated merely by elapsed time; run a
+new validation and refresh when you want newer designations.
 With no `DRAFT_ADVISOR_FIXTURES` override, validation and refresh read Sleeper's
 current `/players/nfl` response and normalize each player's injury designation
 or general status. Fixtures remain available for deterministic tests.

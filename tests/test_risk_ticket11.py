@@ -38,20 +38,17 @@ class RiskReplayTicket11Tests(unittest.TestCase):
         self.assertTrue(all(candidate["risk_visible"] for candidate in elite))
         self.assertTrue(all(candidate["risk_evidence"] == risk["players"]["elite-a"]["observations"] for candidate in elite))
         self.assertTrue(all(candidate["risk_provenance"] == ["fixture"] for candidate in elite))
-        self.assertTrue(all(candidate["risk_freshness"] == risk["freshness"] for candidate in elite))
         self.assertTrue(all(candidate["injury_warning"] is None for candidate in elite))
 
-    def test_invalid_freshness_fails_before_recommendation(self):
+    def test_missing_freshness_does_not_fail_before_recommendation(self):
         bundle = build_bundle()
         risk = self._risk_snapshot(bundle)
-        risk["freshness"] = {"max_age_seconds": 1800}
+        risk.pop("freshness", None)
         bundle["risk_snapshot"] = risk
 
         result = replay(bundle)
 
-        self.assertFalse(result["passed"])
-        self.assertEqual(result["first_failure"]["stage"], "risk")
-        self.assertIn("freshness metadata", result["first_failure"]["message"])
+        self.assertTrue(result["passed"], result["first_failure"])
 
     def test_replay_never_reads_risk_sources(self):
         bundle = build_bundle()

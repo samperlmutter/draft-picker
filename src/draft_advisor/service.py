@@ -141,11 +141,6 @@ def evaluate_risk(
 def read_risk(storage: Storage, clock: Callable[[], float] = time.time) -> dict[str, Any] | None:
     try:
         snapshot = validate_authoritative_risk_snapshot(storage.read_json(storage.risk_path, "no risk snapshot is available"))
-        freshness = snapshot.get("freshness") or {}
-        observed_at = float(freshness["observed_at"])
-        max_age = float(freshness["max_age_seconds"])
-        if max_age < 0 or clock() - observed_at > max_age:
-            return None
         source = snapshot.get("source")
         if not isinstance(source, dict) or not source.get("kind") or not source.get("parser"):
             return None

@@ -397,7 +397,6 @@ def build_risk_snapshot(
         "authoritative": True,
         "generated_at": validated["generated_at"],
         "refreshed_at": now,
-        "freshness": {"observed_at": now, "max_age_seconds": 1800},
         "source": source,
         "parser": {"name": RISK_PARSER, "version": RISK_PARSER_VERSION},
         "players": validated["players"],
@@ -409,7 +408,7 @@ def build_risk_snapshot(
 def validate_authoritative_risk_snapshot(snapshot: Any) -> dict[str, Any]:
     if not isinstance(snapshot, dict) or snapshot.get("schema_version") != RISK_SCHEMA_VERSION or snapshot.get("authoritative") is not True or snapshot.get("phase") != "authoritative":
         raise ValueError("risk snapshot is not authoritative")
-    for key in ("generated_at", "refreshed_at", "freshness", "source", "parser", "players", "data_quality"):
+    for key in ("generated_at", "refreshed_at", "source", "parser", "players", "data_quality"):
         if key not in snapshot:
             raise ValueError(f"risk snapshot is missing {key}")
     if snapshot["data_quality"].get("status") != "pass":

@@ -40,12 +40,12 @@ def test_refresh_rejects_empty_source_without_replacing_previous_snapshot(monkey
     assert read_risk(storage, clock=lambda: 102) == first
 
 
-def test_read_risk_rejects_stale_snapshot(monkeypatch, tmp_path):
+def test_read_risk_accepts_an_older_authoritative_snapshot(monkeypatch, tmp_path):
     _fixture(tmp_path)
     monkeypatch.setenv("DRAFT_ADVISOR_FIXTURES", str(tmp_path))
     storage = Storage(tmp_path / "runtime")
     players = {"p1": {"full_name": "Alex Example"}}
     validate_risk_fixture(storage, players, clock=lambda: 100)
-    refresh_risk(storage, players, clock=lambda: 101)
+    first = refresh_risk(storage, players, clock=lambda: 101)
 
-    assert read_risk(storage, clock=lambda: 1902) is None
+    assert read_risk(storage, clock=lambda: 1902) == first

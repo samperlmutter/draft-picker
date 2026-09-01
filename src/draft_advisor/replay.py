@@ -33,7 +33,6 @@ def _candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         )
     } | {
         "risk_evidence": copy.deepcopy(candidate.get("risk_evidence", [])),
-        "risk_freshness": copy.deepcopy(candidate.get("risk_freshness", {})),
         "risk_provenance": copy.deepcopy(candidate.get("risk_provenance", [])),
         "event_risk_tier": candidate.get("event_risk_tier", "none"),
         "schedule_risk_tier": candidate.get("schedule_risk_tier", "none"),
@@ -58,7 +57,6 @@ def _recommendation_summary(
     for candidate in [recommendation["calculated_pick"], *recommendation["backup_picks"]]:
         risk = snapshot.get("players", {}).get(str(candidate.get("player_id")), {})
         candidate["risk_evidence"] = copy.deepcopy(risk.get("risk_evidence", risk.get("observations", [])))
-        candidate["risk_freshness"] = copy.deepcopy(risk.get("risk_freshness", risk.get("freshness", {})))
         candidate["risk_provenance"] = copy.deepcopy(risk.get("risk_provenance", risk.get("provenance", [])))
     return {
         "pick_no": pick_no,
@@ -130,15 +128,6 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
             risk = validate_authoritative_risk_snapshot(copy.deepcopy(raw_risk))
         except (TypeError, ValueError) as exc:
             raise ReplayFailure("risk", str(exc)) from exc
-        freshness = risk.get("freshness")
-        if not isinstance(freshness, dict) or freshness.get("observed_at") is None:
-            raise ReplayFailure("risk", "risk snapshot freshness metadata is incomplete")
-        try:
-            max_age = float(freshness.get("max_age_seconds"))
-        except (TypeError, ValueError) as exc:
-            raise ReplayFailure("risk", "risk snapshot freshness max age is invalid") from exc
-        if max_age < 0:
-            raise ReplayFailure("risk", "risk snapshot freshness max age cannot be negative")
         if not isinstance(risk.get("source"), dict) or not isinstance(risk.get("parser"), dict):
             raise ReplayFailure("risk", "risk snapshot provenance metadata is incomplete")
         if not isinstance(risk.get("players"), dict):
@@ -161,7 +150,6 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
                 injury_status = risk_injury_status(risk_state)
                 if injury_status:
                     player["injury_status"] = injury_status
-                player["risk_freshness"] = copy.deepcopy(freshness)
                 player["risk_provenance"] = item.get("provenance", [])
                 if isinstance(item.get("event_evaluation"), dict):
                     player["event_evaluation"] = copy.deepcopy(item["event_evaluation"])
