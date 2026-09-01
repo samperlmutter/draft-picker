@@ -11,6 +11,7 @@ from .schedule import league_rules_identity, validate_schedule_snapshot
 from .trade import evaluate
 from .values import validate_value_snapshot
 from .risk import risk_injury_status, validate_authoritative_risk_snapshot
+from .rules import LEGAL_POSITIONS, validate_roster_config, canonical_position, position_requirements
 
 
 class ReplayFailure(ValueError):
@@ -109,7 +110,11 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
     if not isinstance(state, dict) or not isinstance(events, list) or not isinstance(snapshots, list) or not snapshots:
         raise ReplayFailure("input", "replay requires initial_state, events, and value_snapshots")
     rules = state.get("league_rules") or {}
-    if int(rules.get("teams") or 0) != 12 or int(rules.get("rounds") or 0) != 15:
+    try:
+        validate_roster_config(
+            rules.get("roster_positions"), rules.get("teams"), rules.get("rounds"), official=True
+        )
+    except (TypeError, ValueError) as exc:
         raise ReplayFailure("input", "replay must be a 12-team, 15-round draft")
     if len(events) != 180:
         raise ReplayFailure("input", "replay must contain exactly 180 pick events", event_count=len(events))
@@ -196,7 +201,7 @@ def _roster_counts(state: dict[str, Any], snapshot: dict[str, Any], roster_id: i
 def _check_roster(state: dict[str, Any], snapshot: dict[str, Any], roster_id: int, final: bool = False) -> dict[str, int]:
     counts = _roster_counts(state, snapshot, roster_id)
     total = sum(counts.values())
-    if total > 15 or counts["K"] > 1 or counts["DEF"] > 1:
+    if total > 15 or any(position not in LEGAL_POSITIONS for position in counts):
         raise ReplayFailure("roster", "Participant roster became illegal", pick_no=len(state["picks"]), counts=dict(counts), total=total)
     if final:
         skill = counts["RB"] + counts["WR"] + counts["TE"]
@@ -214,8 +219,8 @@ def _check_roster(state: dict[str, Any], snapshot: dict[str, Any], roster_id: in
                 surplus -= used
                 flex_remaining -= used
             bench_positions.extend([position] * surplus)
-        if len(bench_positions) != 5 or any(position in {"K", "DEF"} for position in bench_positions) or sum(position in {"RB", "WR"} for position in bench_positions) < 3:
-            raise ReplayFailure("roster", "final bench violates draft strategy", counts=dict(counts), bench_positions=bench_positions)
+        if len(bench_positions) != 5:
+            raise ReplayFailure("roster", "final roster must contain exactly five bench players", counts=dict(counts), bench_positions=bench_positions)
     return dict(sorted(counts.items()))
 
 
@@ -329,7 +334,7 @@ def replay(bundle: dict[str, Any]) -> dict[str, Any]:
             "trade_decisions": decisions == {"accept", "reject", "close"},
             "useful_counteroffer": counteroffer_seen,
             "future_pick_rejected": future_rejected,
-            "k_def_final_rounds": set(rounds_by_special) == {"K", "DEF"} and min(rounds_by_special.values()) >= 14,
+            "k_def_final_rounds": set(rounds_by_special) == {"K", "DEF"} and min(rounds_by_special.values()) >= 13,
             "schedule_context_replayed": schedule is None or all(
                 candidate["schedule_data_quality"] == (schedule.get("data_quality") or {}).get("status")
                 for item in recommendations

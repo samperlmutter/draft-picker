@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Any, Callable
 
 from .risk import risk_is_visible
+from .rules import LEGAL_POSITIONS, canonical_position
 
 
 FLEX_POSITIONS = {"RB", "WR", "TE"}
@@ -22,8 +23,7 @@ class InsufficientCandidates(ValueError):
 
 
 def _canonical_position(value: Any) -> str:
-    normalized = str(value or "").upper()
-    return "DEF" if normalized == "DST" else normalized
+    return canonical_position(value)
 
 
 def _position_requirements(state: dict[str, Any]) -> Counter[str]:
@@ -61,7 +61,7 @@ def _fit(position: str, requirements: Counter[str], roster: Counter[str]) -> tup
     if position in {"QB", "TE"}:
         return -10.0, f"backup {position} is a soft-limit penalty"
     if position in {"K", "DEF"}:
-        return -30.0, f"bench {position} is not allowed"
+        return -6.0, f"bench {position} is a strategic preference"
     return 3.0, "adds RB/WR bench depth" if position in {"RB", "WR"} else "bench depth"
 
 
@@ -350,6 +350,7 @@ def calculate(
     available = {
         player_id: player for player_id, player in snapshot["players"].items()
         if player_id not in set(state.get("selected_player_ids") or [])
+        and _canonical_position(player.get("position")) in LEGAL_POSITIONS
         and str(player.get("status") or "Active").lower() not in {"inactive", "retired"}
     }
     if len(available) < 5:
@@ -374,6 +375,12 @@ def calculate(
     next_turn = state.get("participant_next_turn") or current_turn
     next_pick_no = int((next_turn or {}).get("pick_no") or len(state.get("picks") or []) + 1)
     picks_until_next = max(0, next_pick_no - (len(state.get("picks") or []) + 1))
+    participant_remaining = sum(
+        1 for turn in state.get("turns") or []
+        if int(turn.get("pick_no") or 0) >= len(state.get("picks") or []) + 1
+        and int(turn.get("owner_roster_id") or 0) == participant_id
+    )
+    missing_special = [position for position in ("K", "DEF") if roster[position] < requirements[position]]
     max_value = max(float(player["value"]) for player in available.values()) or 1.0
     by_position: dict[str, list[float]] = {}
     for player in available.values():
@@ -397,7 +404,12 @@ def calculate(
         position = _canonical_position(player.get("position"))
         if not position:
             continue
-        if position in {"K", "DEF"} and (roster[position] >= requirements[position] or current_round < max(1, total_rounds - 1)):
+        if position not in LEGAL_POSITIONS:
+            continue
+        late_round_start = max(2, total_rounds - 2)
+        if position in {"K", "DEF"} and roster[position] >= requirements[position]:
+            continue
+        if position in {"K", "DEF"} and current_round < late_round_start:
             continue
         quality = 70.0 * float(player["value"]) / max_value
         fit, fit_text = _fit(position, requirements, roster)
@@ -417,6 +429,18 @@ def calculate(
         run_pressure = 0.2 if position == recent_run_position else 0.0
         demand = min(5.0, need_count * 1.5 + run_pressure * 5)
         expected_survival = max(0.02, expected_survival - min(0.35, need_count * 0.1) - run_pressure)
+        special_wait_penalty = (
+            -16.0 * expected_survival
+            if position in {"K", "DEF"} and current_round < total_rounds
+            else 0.0
+        )
+        special_completion_bonus = (
+            8.0
+            if position in missing_special
+            and participant_remaining
+            and participant_remaining <= len(missing_special)
+            else 0.0
+        )
         stage = min(1.0, max(0.0, (current_round - 1) / max(1, total_rounds - 1)))
         stability = float(player.get("stability", 0.5))
         upside = float(player.get("upside", 0.5))
@@ -448,12 +472,14 @@ def calculate(
         )
         schedule_evidence["roster_collision"] = roster_collision
         roster_collision_adjustment = float(roster_collision["adjustment"])
-        score = quality + fit + scarcity + wait_cost + demand + round_strategy + injury_penalty + diversity_tiebreaker + schedule_adjustment + roster_collision_adjustment
+        score = quality + fit + scarcity + wait_cost + demand + round_strategy + injury_penalty + diversity_tiebreaker + special_wait_penalty + special_completion_bonus + schedule_adjustment + roster_collision_adjustment
         components = {
             "primary_value": round(quality, 3), "roster_fit": round(fit, 3),
             "positional_scarcity": round(scarcity, 3), "wait_cost": round(wait_cost, 3),
             "opponent_demand": round(demand, 3), "round_strategy": round(round_strategy, 3),
             "injury_penalty": injury_penalty,
+            "special_wait_penalty": round(special_wait_penalty, 3),
+            "special_completion_bonus": round(special_completion_bonus, 3),
             "risk_state": risk_state,
             "bye_week_penalty": round(bye_week_penalty, 3),
             "diversity_tiebreaker": round(diversity_tiebreaker, 3),

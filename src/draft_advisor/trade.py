@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from .rules import LEGAL_POSITIONS, canonical_position
+
 
 SUPPORTED_TYPES = {"player", "pick"}
 
@@ -133,6 +135,11 @@ def evaluate(offer: dict[str, Any], state: dict[str, Any], snapshot: dict[str, A
     if len(partner_ids) != 1:
         raise ValueError("a Trade Offer must involve exactly one other roster")
     values = snapshot["players"]
+    for asset in [*give, *receive]:
+        if asset.get("type", "").lower() == "player":
+            player = values.get(str(asset.get("player_id")))
+            if player is None or canonical_position(player.get("position")) not in LEGAL_POSITIONS:
+                raise ValueError("trade player has an unsupported fantasy position")
     requirements = _requirements(state)
     positions = _positions(state, values, participant)
     give_value = sum(_asset_value(asset, state, values) for asset in give)
