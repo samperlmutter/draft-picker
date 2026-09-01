@@ -2,4 +2,5 @@
 __pycache__/
 .pycache/
 *.py[cod]
+*.egg-info/
 .draft-advisor/

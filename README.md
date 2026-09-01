@@ -8,21 +8,31 @@ The checked-in `draft-advisor.json` configures the league, participant, the
 five-second draft polling cadence, and the 30-minute cadence reserved for
 external value data.
 
+## Development setup
+
+Install the project and its test tools with:
+
 ```sh
-python3 -m draft_advisor monitor start
-python3 -m draft_advisor prepare
-python3 -m draft_advisor recommend
-python3 -m draft_advisor recommend --json
-python3 -m draft_advisor refresh
-python3 -m draft_advisor trade --offer-file confirmed-trade.json --json
-python3 -m draft_advisor replay --input complete-draft.json --json
-python3 -m draft_advisor status
-python3 -m draft_advisor status --json
-python3 -m draft_advisor monitor stop
+uv sync
 ```
 
-When running from a checkout without installing the package, set
-`PYTHONPATH=src`. `DRAFT_ADVISOR_CONFIG` can select another config file and
+Run the CLI and tests through the managed environment:
+
+```sh
+uv run draft-advisor monitor start
+uv run draft-advisor prepare
+uv run draft-advisor recommend
+uv run draft-advisor recommend --json
+uv run draft-advisor refresh
+uv run draft-advisor trade --offer-file confirmed-trade.json --json
+uv run draft-advisor replay --input complete-draft.json --json
+uv run draft-advisor status
+uv run draft-advisor status --json
+uv run draft-advisor monitor stop
+uv run pytest
+```
+
+`DRAFT_ADVISOR_CONFIG` can select another config file and
 `DRAFT_ADVISOR_RUNTIME_DIR` can select another local state directory. Tests use
 `DRAFT_ADVISOR_FIXTURES` to route all Sleeper reads to recorded JSON responses.
 
