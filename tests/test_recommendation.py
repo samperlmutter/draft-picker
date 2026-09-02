@@ -184,8 +184,8 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(result["participant"]["roster_id"], 8)
         self.assertIsNotNone(result["next_turn"])
         self.assertEqual(len(result["recommendation"]["backup_picks"]), 4)
-        # Cross several controlled monitor polls; unchanged source content must
-        # not republish the value snapshot or warm Recommendation.
+        # A direct recommendation request refreshes the board and recalculates,
+        # even when the monitor has already warmed an unchanged result.
         time.sleep(0.35)
         started = time.perf_counter()
         warm = cli(env, "recommend", "--json")
@@ -193,7 +193,10 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(warm.returncode, 0, warm.stderr)
         self.assertLess(elapsed, 1.0)
         recommendation = json.loads(warm.stdout)
-        self.assertEqual(recommendation, result["recommendation"])
+        self.assertEqual(
+            recommendation["calculated_pick"]["player_id"],
+            result["recommendation"]["calculated_pick"]["player_id"],
+        )
         self.assertNotIn("confidence", warm.stdout.lower())
         text = cli(env, "recommend")
         self.assertIn("Calculated Pick:", text.stdout)
@@ -202,6 +205,34 @@ class RecommendationTests(unittest.TestCase):
         again = json.loads(cli(env, "prepare", "--json").stdout)
         self.assertFalse(again["monitor_started"])
         cli(env, "monitor", "stop")
+
+    def test_recommend_refreshes_board_before_returning(self) -> None:
+        env, fixtures = setup_fixture(self.tmp_path, live=True)
+        prepared = cli(env, "prepare", "--json")
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        cli(env, "monitor", "stop")
+
+        picks_path = fixtures / "draft__draft-1__picks.json"
+        picks = json.loads(picks_path.read_text())
+        picks.append({
+            "pick_no": 2,
+            "round": 1,
+            "draft_slot": 2,
+            "roster_id": 9,
+            "player_id": "p2",
+            "picked_by": "u9",
+            "metadata": {},
+        })
+        write_json(picks_path, picks)
+
+        recommendation = cli(env, "recommend", "--json")
+        self.assertEqual(recommendation.returncode, 0, recommendation.stderr)
+        result = json.loads(recommendation.stdout)
+        candidate_ids = {
+            result["calculated_pick"]["player_id"],
+            *(pick["player_id"] for pick in result["backup_picks"]),
+        }
+        self.assertNotIn("p2", candidate_ids)
 
     def test_prepared_schedule_recommendation_does_not_refetch_or_recompute(self) -> None:
         players = recommendation_players()
@@ -258,7 +289,10 @@ class RecommendationTests(unittest.TestCase):
         self.assertEqual(cli(env, "status", "--refresh").returncode, 0)
         first = json.loads(cli(env, "recommend", "--json").stdout)
         second = json.loads(cli(env, "recommend", "--json").stdout)
-        self.assertEqual(first, second)
+        # Each live refresh republishes timestamps, but the board-derived
+        # candidates and their evidence remain deterministic.
+        self.assertEqual(first["calculated_pick"], second["calculated_pick"])
+        self.assertEqual(first["backup_picks"], second["backup_picks"])
         candidates = [first["calculated_pick"], *first["backup_picks"]]
         scores = [candidate["draft_score"] for candidate in candidates]
         self.assertEqual(scores, sorted(scores, reverse=True))

@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import load_config
 from .monitor import monitor_pid, refresh, run, start, stop
-from .service import ensure_values, evaluate_risk, read_recommendation, recalculate, refresh_risk, validate_risk_fixture
+from .service import ensure_values, evaluate_risk, recalculate, refresh_risk, validate_risk_fixture
 from .risk import apply_risk_overrides, validate_risk_snapshot
 from .sleeper import SleeperClient
 from .storage import Storage
@@ -226,7 +226,13 @@ def main(argv: list[str] | None = None) -> int:
             state["monitor_running"] = monitor_pid(storage) is not None
             print(json.dumps(state, sort_keys=True) if args.json_output else _text(state, state["monitor_running"]))
         elif args.command == "recommend":
-            recommendation = read_recommendation(storage)
+            # A pick request must be based on the latest board, even when a
+            # monitor was not started or has not completed its next poll.
+            refresh(config, storage)
+            with storage.publication_lock():
+                state = storage.read_state()
+                snapshot, _ = ensure_values(config, storage)
+                recommendation = recalculate(storage, state, snapshot)
             print(json.dumps(recommendation, sort_keys=True) if args.json_output else _recommendation_text(recommendation))
         elif args.command == "refresh":
             with storage.publication_lock():
