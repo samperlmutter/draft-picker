@@ -11,7 +11,7 @@ from .schedule import league_rules_identity, validate_schedule_snapshot
 from .trade import evaluate
 from .values import validate_value_snapshot
 from .risk import risk_injury_status, validate_authoritative_risk_snapshot
-from .rules import LEGAL_POSITIONS, validate_roster_config, canonical_position, position_requirements
+from .rules import LEGAL_POSITIONS, OFFICIAL_ROSTER, validate_roster_config, canonical_position, validate_lineup
 
 
 class ReplayFailure(ValueError):
@@ -183,7 +183,11 @@ def _validate_shape(bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[s
 
 def _roster_counts(state: dict[str, Any], snapshot: dict[str, Any], roster_id: int) -> Counter[str]:
     roster = state["rosters"][str(roster_id)]
-    return Counter(str(snapshot["players"][player_id]["position"]).upper() for player_id in roster["player_ids"] if player_id in snapshot["players"])
+    return Counter(
+        canonical_position(snapshot["players"][player_id]["position"])
+        for player_id in roster["player_ids"]
+        if player_id in snapshot["players"]
+    )
 
 
 def _check_roster(state: dict[str, Any], snapshot: dict[str, Any], roster_id: int, final: bool = False) -> dict[str, int]:
@@ -192,23 +196,22 @@ def _check_roster(state: dict[str, Any], snapshot: dict[str, Any], roster_id: in
     if total > 15 or any(position not in LEGAL_POSITIONS for position in counts):
         raise ReplayFailure("roster", "Participant roster became illegal", pick_no=len(state["picks"]), counts=dict(counts), total=total)
     if final:
-        skill = counts["RB"] + counts["WR"] + counts["TE"]
-        required = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
-        missing = {position: amount for position, amount in required.items() if counts[position] < amount}
-        if missing or skill < 7 or total != 15:
-            raise ReplayFailure("roster", "final Participant roster does not fill all starters and bench capacity", counts=dict(counts), missing=missing, total=total)
-        bench_positions = []
-        direct = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
-        flex_remaining = 2
-        for position, count in counts.items():
-            surplus = max(0, count - direct.get(position, 0))
-            if position in {"RB", "WR", "TE"}:
-                used = min(surplus, flex_remaining)
-                surplus -= used
-                flex_remaining -= used
-            bench_positions.extend([position] * surplus)
-        if len(bench_positions) != 5:
-            raise ReplayFailure("roster", "final roster must contain exactly five bench players", counts=dict(counts), bench_positions=bench_positions)
+        roster_positions = (state.get("league_rules") or {}).get("roster_positions") or OFFICIAL_ROSTER
+        player_positions = [
+            snapshot["players"][player_id]["position"]
+            for player_id in state["rosters"][str(roster_id)]["player_ids"]
+            if player_id in snapshot["players"]
+        ]
+        try:
+            validate_lineup(roster_positions, player_positions, require_full_roster=True)
+        except ValueError as exc:
+            raise ReplayFailure(
+                "roster",
+                "final Participant roster cannot support the required weekly lineup",
+                counts=dict(counts),
+                total=total,
+                lineup_error=str(exc),
+            ) from exc
     return dict(sorted(counts.items()))
 
 

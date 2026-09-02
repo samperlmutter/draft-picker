@@ -4,8 +4,8 @@ import unittest
 from collections import Counter
 
 from src.draft_advisor.recommend import calculate
-from src.draft_advisor.replay import _check_roster
-from src.draft_advisor.rules import OFFICIAL_ROSTER, validate_roster_config
+from src.draft_advisor.replay import ReplayFailure, _check_roster
+from src.draft_advisor.rules import OFFICIAL_ROSTER, lineup_completion_validation, validate_lineup, validate_roster_config
 from src.draft_advisor.values import validate_value_snapshot
 
 
@@ -85,6 +85,46 @@ class RuleTests(unittest.TestCase):
             _check_roster(state, {"players": players}, 8, final=True),
             dict(sorted(Counter(positions).items())),
         )
+
+    def test_lineup_validation_requires_direct_slots_and_two_flex_players(self) -> None:
+        valid = ["QB", "RB", "RB", "WR", "WR", "TE", "RB", "WR", "K", "DEF"]
+        self.assertTrue(validate_lineup(OFFICIAL_ROSTER, valid)["valid"])
+
+        with self.assertRaisesRegex(ValueError, "K x1|DEF x1"):
+            validate_lineup(OFFICIAL_ROSTER, [*valid[:-2], "RB", "WR"])
+
+        only_one_flex = ["QB", "RB", "RB", "WR", "WR", "TE", "RB", "K", "DEF"]
+        with self.assertRaisesRegex(ValueError, "FLEX-eligible"):
+            validate_lineup(OFFICIAL_ROSTER, only_one_flex)
+
+    def test_final_roster_validation_rejects_a_roster_without_special_teams(self) -> None:
+        positions = ["QB", "RB", "RB", "WR", "WR", "TE", "RB", "WR", "TE", "TE", "K", "RB", "WR", "QB", "RB"]
+        players = {f"p{index}": {"position": position} for index, position in enumerate(positions)}
+        state = {
+            "league_rules": {"roster_positions": list(OFFICIAL_ROSTER)},
+            "rosters": {"8": {"player_ids": list(players)}},
+        }
+        with self.assertRaisesRegex(ReplayFailure, "weekly lineup"):
+            _check_roster(state, {"players": players}, 8, final=True)
+
+    def test_lineup_completion_requires_remaining_special_teams_and_flex_depth(self) -> None:
+        result = lineup_completion_validation(
+            OFFICIAL_ROSTER,
+            ["RB", "WR"],
+            ["QB", "RB", "RB", "WR", "WR", "TE", "RB", "WR"],
+            13,
+        )
+        self.assertFalse(result["feasible"])
+        self.assertEqual(result["unavailable_direct"], {"K": 1, "DEF": 1})
+
+        result = lineup_completion_validation(
+            OFFICIAL_ROSTER,
+            ["QB", "RB", "RB", "WR", "WR", "TE", "K", "DEF"],
+            ["RB"],
+            1,
+        )
+        self.assertFalse(result["feasible"])
+        self.assertEqual(result["missing_flex"], 2)
 
 
 if __name__ == "__main__":
