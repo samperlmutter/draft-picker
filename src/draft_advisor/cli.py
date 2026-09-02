@@ -80,6 +80,20 @@ def _text(state: dict[str, Any], running: bool) -> str:
 
 
 def _recommendation_text(recommendation: dict[str, Any]) -> str:
+    def availability_notice(candidate: dict[str, Any]) -> str | None:
+        evaluation = candidate.get("event_evaluation")
+        if not isinstance(evaluation, dict):
+            return None
+        for event in evaluation.get("events") or []:
+            if not isinstance(event, dict) or event.get("event_type") != "availability":
+                continue
+            summary = str(event.get("summary") or "").strip()
+            source = str(event.get("source") or "").strip()
+            if not summary:
+                continue
+            return f"{summary} (source: {source.replace('_', ' ').title()})" if source else summary
+        return None
+
     pick = recommendation["calculated_pick"]
     lines = [f"Calculated Pick: {pick['name']} ({pick['position']}, score {pick['draft_score']:.3f})"]
     lines.append(f"Evidence: {pick['roster_fit']}; survival {pick['expected_survival_to_next_turn']:.0%}; scarcity {pick['scarcity']:.3f}")
@@ -91,11 +105,16 @@ def _recommendation_text(recommendation: dict[str, Any]) -> str:
         f"playoffs {float(components.get('playoff_matchup', 0.0)):+.3f}; "
         f"collision {float(components.get('roster_collision', 0.0)):+.3f}"
     )
-    if pick.get("injury_warning"):
+    pick_availability = availability_notice(pick)
+    if pick_availability:
+        lines.append(f"Availability: {pick_availability}")
+    elif pick.get("injury_warning"):
         lines.append(f"Warning: {pick['injury_warning']}")
     lines.append("Backup Picks:")
     for index, backup in enumerate(recommendation["backup_picks"], 1):
-        warning = f"; WARNING {backup['injury_warning']}" if backup.get("injury_warning") else ""
+        backup_availability = availability_notice(backup)
+        warning_text = backup_availability or backup.get("injury_warning")
+        warning = f"; WARNING {warning_text}" if warning_text else ""
         lines.append(f"{index}. {backup['name']} ({backup['position']}, score {backup['draft_score']:.3f}){warning}")
     if recommendation.get("matching_omissions"):
         lines.append(f"Player matches omitted: {len(recommendation['matching_omissions'])}")

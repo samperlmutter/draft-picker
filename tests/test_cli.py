@@ -9,6 +9,8 @@ import time
 import unittest
 from pathlib import Path
 
+from src.draft_advisor.cli import _recommendation_text
+
 
 ROOT = Path(__file__).parents[1]
 
@@ -64,6 +66,29 @@ class CliTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_recommendation_text_preserves_availability_source(self) -> None:
+        candidate = {
+            "name": "Questionable Player",
+            "position": "WR",
+            "draft_score": 1.0,
+            "roster_fit": "fills open WR starter",
+            "expected_survival_to_next_turn": 0.02,
+            "scarcity": 1.0,
+            "components": {},
+            "event_evaluation": {
+                "events": [{
+                    "event_type": "availability",
+                    "summary": "Sleeper designation: Questionable",
+                    "source": "sleeper",
+                }],
+            },
+        }
+        recommendation = {"calculated_pick": candidate, "backup_picks": []}
+
+        output = _recommendation_text(recommendation)
+
+        self.assertIn("Availability: Sleeper designation: Questionable (source: Sleeper)", output)
 
     def test_pre_draft_status_text_and_json(self) -> None:
         env, _ = setup_fixture(self.tmp_path)
