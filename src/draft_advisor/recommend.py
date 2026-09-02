@@ -387,6 +387,15 @@ def calculate(
         by_position.setdefault(str(player.get("position") or ""), []).append(float(player["value"]))
     for values in by_position.values():
         values.sort(reverse=True)
+    special_max_values = {
+        position: max(
+            (float(player["value"]) for player in available.values()
+             if _canonical_position(player.get("position")) == position
+             and player.get("value_source") == "ffc_adp_fallback"),
+            default=0.0,
+        )
+        for position in ("K", "DEF")
+    }
 
     intervening = [turn for turn in state.get("turns") or [] if len(state.get("picks") or []) + 1 <= int(turn["pick_no"]) < next_pick_no]
     opponent_rosters = {int(turn["owner_roster_id"]) for turn in intervening if turn.get("owner_roster_id") != participant_id}
@@ -411,7 +420,13 @@ def calculate(
             continue
         if position in {"K", "DEF"} and current_round < late_round_start:
             continue
-        quality = 70.0 * float(player["value"]) / max_value
+        if player.get("value_source") == "ffc_adp_fallback" and position in special_max_values:
+            # ADP fallback values are only meaningful within K or DEF; do not
+            # compare their small scale directly with FantasyCalc skill-player
+            # values.
+            quality = 6.0 * float(player["value"]) / max(1.0, special_max_values[position])
+        else:
+            quality = 70.0 * float(player["value"]) / max_value
         fit, fit_text = _fit(position, requirements, roster)
         position_values = by_position.get(position, [])
         replacement_index = min(len(position_values) - 1, max(1, picks_until_next))
@@ -481,6 +496,7 @@ def calculate(
             "special_wait_penalty": round(special_wait_penalty, 3),
             "special_completion_bonus": round(special_completion_bonus, 3),
             "risk_state": risk_state,
+            "value_source": player.get("value_source", "fantasycalc"),
             "bye_week_penalty": round(bye_week_penalty, 3),
             "diversity_tiebreaker": round(diversity_tiebreaker, 3),
             "regular_season_matchup": schedule_evidence["regular_season"]["adjustment"],

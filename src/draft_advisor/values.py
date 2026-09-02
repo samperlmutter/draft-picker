@@ -16,6 +16,7 @@ from .rules import LEGAL_POSITIONS, canonical_position
 
 FANTASYCALC_URL = "https://api.fantasycalc.com/values/current?isDynasty=false&numQbs=1&numTeams=12&ppr=1"
 FFC_URL = "https://fantasyfootballcalculator.com/api/v1/adp/ppr?teams=12&year=2026"
+SPECIAL_POSITIONS = frozenset({"K", "DEF"})
 
 
 def _normalize(value: Any) -> str:
@@ -89,6 +90,19 @@ def _ffc_rows(payload: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _adp_fallback_value(adp: float, position_adps: list[float]) -> float:
+    """Give special teams players a relative value when FantasyCalc omits them.
+
+    This is intentionally not presented as projected fantasy points.  It is a
+    small, position-local signal derived from the ADP feed so K/DEF players can
+    remain on the draft board and be compared in the rounds where they are
+    eligible.
+    """
+    ordered = sorted(position_adps)
+    rank = ordered.index(adp) + 1
+    return round(max(0.5, 6.0 - (rank - 1) * 0.25), 3)
+
+
 def build_value_snapshot(client: SleeperClient | None = None, clock: Callable[[], float] = time.time) -> dict[str, Any]:
     sleeper_players = (client or SleeperClient()).players()
     fantasycalc = _fantasycalc_rows(_fixture_or_url("fantasycalc.json", FANTASYCALC_URL))
@@ -116,12 +130,35 @@ def build_value_snapshot(client: SleeperClient | None = None, clock: Callable[[]
         if player_id:
             values[player_id] = {key: value for key, value in row.items() if key != "sleeper_id"}
     adp: dict[str, float] = {}
+    adp_rows_by_player: dict[str, dict[str, Any]] = {}
     for row in adp_rows:
         player_id = match(row, "ffc_adp")
         if player_id:
             adp[player_id] = row["adp"]
+            adp_rows_by_player[player_id] = row
     if len(adp) < 5:
         raise ValueError("external snapshot is incomplete after ADP player matching")
+
+    special_position_adps = {
+        position: [
+            adp_value for player_id, adp_value in adp.items()
+            if adp_rows_by_player[player_id]["position"] == position
+        ]
+        for position in SPECIAL_POSITIONS
+    }
+    for player_id, row in adp_rows_by_player.items():
+        if player_id in values or row["position"] not in SPECIAL_POSITIONS:
+            continue
+        sleeper = sleeper_players[player_id]
+        values[player_id] = {
+            "name": sleeper.get("full_name") or row.get("name"),
+            "team": sleeper.get("team") or row.get("team"),
+            "position": sleeper.get("position") or row.get("position"),
+            "value": _adp_fallback_value(row["adp"], special_position_adps[row["position"]]),
+            "stability": 0.5,
+            "upside": 0.5,
+            "value_source": "ffc_adp_fallback",
+        }
     for player_id, player in values.items():
         player["adp"] = adp.get(player_id)
         sleeper = sleeper_players[player_id]
@@ -134,6 +171,7 @@ def build_value_snapshot(client: SleeperClient | None = None, clock: Callable[[]
             "injury_status": sleeper.get("injury_status"),
             "bye_week": sleeper.get("bye_week"),
         })
+        player.setdefault("value_source", "fantasycalc")
     if len(values) < 5:
         raise ValueError("external snapshot is incomplete after player matching")
     return {"schema_version": 1, "updated_at": clock(), "format": "12-team one-QB full-PPR", "players": values, "omitted": omitted}

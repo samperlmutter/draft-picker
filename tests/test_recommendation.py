@@ -399,6 +399,34 @@ class RecommendationTests(unittest.TestCase):
         late_candidates = json.loads(cli(env, "recommend", "--json").stdout)
         self.assertIn(late_candidates["calculated_pick"]["position"], {"K", "DEF"})
 
+    def test_adp_fallback_special_teams_values_are_compared_within_position(self) -> None:
+        players = {
+            f"def-{index}": {
+                "name": f"Defense {index}",
+                "team": f"T{index}",
+                "position": "DEF",
+                "status": "Active",
+                "value": 6.0 - index * 0.25,
+                "value_source": "ffc_adp_fallback",
+                "adp": 150 + index,
+                "stability": 0.5,
+                "upside": 0.5,
+            }
+            for index in range(5)
+        }
+        state = recommendation_state("DEF")
+        recommendation = calculate(
+            state,
+            {"updated_at": 1.0, "players": players},
+            clock=lambda: 2.0,
+        )
+
+        candidates = [recommendation["calculated_pick"], *recommendation["backup_picks"]]
+        assert candidates[0]["player_id"] == "def-0"
+        assert candidates[0]["components"]["value_source"] == "ffc_adp_fallback"
+        assert candidates[0]["components"]["primary_value"] == 6.0
+        assert candidates[0]["draft_score"] > candidates[1]["draft_score"]
+
     def test_cached_schedule_improves_favorable_offensive_matchup(self) -> None:
         players = recommendation_players()
         state = recommendation_state()
